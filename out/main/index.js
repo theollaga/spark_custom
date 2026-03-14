@@ -430,35 +430,369 @@ const addDetailRouter = (router2) => {
           }
           return null;
         });
+        // ========== 추가 수집 항목 (SourceFlowX 호환) ==========
+        const extraData = await page.evaluate(() => {
+          const result = {};
+          const html = document.documentElement.outerHTML;
+
+          // parent_asin
+          const parentAsinInput = document.querySelector('input[name="parentAsin"]');
+          result.parent_asin = parentAsinInput ? parentAsinInput.value.trim() : "";
+
+          // date_first_available
+          result.date_first_available = "";
+          document.querySelectorAll("table tr").forEach((row) => {
+            const th = row.querySelector("th");
+            const td = row.querySelector("td");
+            if (th && td && th.textContent.trim().toLowerCase().includes("date first available")) {
+              result.date_first_available = td.textContent.trim();
+            }
+          });
+          if (!result.date_first_available) {
+            const bullets = document.querySelector("#detailBullets_feature_div");
+            if (bullets) {
+              bullets.querySelectorAll("li").forEach((li) => {
+                if (li.textContent.toLowerCase().includes("date first available")) {
+                  const parts = li.textContent.split(":");
+                  if (parts.length >= 2) result.date_first_available = parts.slice(1).join(":").trim();
+                }
+              });
+            }
+          }
+
+          // currency
+          result.currency = "";
+          const priceEl = document.querySelector("#corePriceDisplay_desktop_feature_div .a-offscreen, .a-price .a-offscreen");
+          if (priceEl) {
+            const priceText = priceEl.textContent.trim();
+            const currMatch = priceText.match(/^([^\d]*)/);
+            if (currMatch) result.currency = currMatch[1].trim();
+          }
+
+          // original_price
+          result.original_price = 0;
+          const origSelectors = [
+            ".a-text-price[data-a-strike='true'] .a-offscreen",
+            ".basisPrice .a-offscreen",
+            "#listPrice .a-offscreen",
+            ".a-price[data-a-color='secondary'] .a-offscreen",
+          ];
+          for (const sel of origSelectors) {
+            const el = document.querySelector(sel);
+            if (el) {
+              const m = el.textContent.trim().match(/[\d,]+\.?\d*/);
+              if (m) { result.original_price = parseFloat(m[0].replace(/,/g, "")); break; }
+            }
+          }
+
+          // discount_percent
+          result.discount_percent = 0;
+          const discountEl = document.querySelector(".savingsPercentage");
+          if (discountEl) {
+            const dm = discountEl.textContent.match(/(\d+)/);
+            if (dm) result.discount_percent = parseInt(dm[1]);
+          }
+
+          // coupon_text
+          result.coupon_text = "";
+          const couponEl = document.querySelector("#couponBadge, .couponText, #vpcButton");
+          if (couponEl) result.coupon_text = couponEl.textContent.trim();
+
+          // deal_type
+          result.deal_type = "";
+          if (document.querySelector("#dealBadge, .lightning-deal-bxgy-container")) {
+            result.deal_type = "Lightning Deal";
+          } else if (document.querySelector("#dotd-badge, .dotdBadge")) {
+            result.deal_type = "Deal of the Day";
+          }
+
+          // subscribe_save_price
+          result.subscribe_save_price = 0;
+          const snsEl = document.querySelector("#snsPrice .a-offscreen, #sns-base-price");
+          if (snsEl) {
+            const sm = snsEl.textContent.match(/[\d,]+\.?\d*/);
+            if (sm) result.subscribe_save_price = parseFloat(sm[0].replace(/,/g, ""));
+          }
+
+          // is_prime
+          result.is_prime = false;
+          const primeSelectors = [
+            "i.a-icon-prime", ".a-icon-prime", "#prime-tp",
+            "#primeExclusiveBadge_feature_div",
+            "#deliveryBlockMessage i.a-icon-prime",
+          ];
+          for (const sel of primeSelectors) {
+            if (document.querySelector(sel)) { result.is_prime = true; break; }
+          }
+          if (!result.is_prime) {
+            const primePatterns = ['"isPrime":true', '"isPrimeEligible":true', '"isAmazonFulfilled":true'];
+            for (const pat of primePatterns) {
+              if (html.includes(pat)) { result.is_prime = true; break; }
+            }
+          }
+
+          // image_count
+          result.image_count = document.querySelectorAll("#altImages img").length;
+
+          // has_video
+          result.has_video = !!document.querySelector("#videoBlock, .videoCount, #altImages .videoThumbnail");
+
+          // description_text, description_html
+          result.description_text = "";
+          result.description_html = "";
+          const descEl = document.querySelector("#productDescription") ||
+                         document.querySelector("#productDescription_feature_div") ||
+                         document.querySelector("#bookDescription_feature_div");
+          if (descEl) {
+            result.description_text = descEl.textContent.trim();
+            result.description_html = descEl.innerHTML;
+          }
+
+          // aplus_html
+          result.aplus_html = "";
+          const aplusSelectors = ["#aplus", "#aplus_feature_div", "#aplus3p_feature_div", ".aplus-v2"];
+          for (const sel of aplusSelectors) {
+            const el = document.querySelector(sel);
+            if (el && el.innerHTML.length > 100) { result.aplus_html = el.innerHTML; break; }
+          }
+
+          // specifications
+          result.specifications = {};
+          const specTable = document.querySelector("#productDetails_techSpec_section_1");
+          if (specTable) {
+            specTable.querySelectorAll("tr").forEach((row) => {
+              const th = row.querySelector("th");
+              const td = row.querySelector("td");
+              if (th && td) result.specifications[th.textContent.trim()] = td.textContent.trim();
+            });
+          }
+          const specTable2 = document.querySelector("#productDetails_detailBullets_sections1");
+          if (specTable2) {
+            specTable2.querySelectorAll("tr").forEach((row) => {
+              const th = row.querySelector("th");
+              const td = row.querySelector("td");
+              if (th && td) {
+                const key = th.textContent.trim();
+                if (!result.specifications[key]) result.specifications[key] = td.textContent.trim();
+              }
+            });
+          }
+          if (Object.keys(result.specifications).length === 0) {
+            const detailBullets = document.querySelector("#detailBullets_feature_div");
+            if (detailBullets) {
+              detailBullets.querySelectorAll("li").forEach((li) => {
+                const spans = li.querySelectorAll("span span");
+                if (spans.length >= 2) {
+                  result.specifications[spans[0].textContent.trim().replace(/[\s:\u200f\u200e]+$/, "")] = spans[1].textContent.trim();
+                }
+              });
+            }
+          }
+
+          // rating
+          result.rating = 0;
+          const ratingEl = document.querySelector("#acrPopover i.a-icon-star span.a-icon-alt") ||
+                           document.querySelector("#averageCustomerReviews .a-icon-alt");
+          if (ratingEl) {
+            const rm = ratingEl.textContent.match(/([\d.]+)\s+out\s+of/);
+            if (rm) result.rating = parseFloat(rm[1]);
+          }
+
+          // reviews_count
+          result.reviews_count = 0;
+          const reviewsEl = document.querySelector("#acrCustomerReviewText");
+          if (reviewsEl) {
+            const rcm = reviewsEl.textContent.match(/[\d,]+/);
+            if (rcm) result.reviews_count = parseInt(rcm[0].replace(/,/g, ""));
+          }
+
+          // rating_distribution
+          result.rating_distribution = {};
+          const histTable = document.querySelector("#histogramTable, #cm_cr_dp_d_hist_table");
+          if (histTable) {
+            histTable.querySelectorAll("tr").forEach((row) => {
+              const starEl = row.querySelector("td:first-child a, td:first-child span");
+              const pctEl = row.querySelector("td.a-text-right a, td:nth-child(3) a, .a-size-small a");
+              if (starEl && pctEl) {
+                const sm2 = starEl.textContent.match(/(\d)/);
+                const pm = pctEl.textContent.match(/(\d+)/);
+                if (sm2 && pm) result.rating_distribution[sm2[1] + "_star"] = parseInt(pm[1]);
+              }
+            });
+          }
+
+          // answered_questions
+          result.answered_questions = 0;
+          const qaLink = document.querySelector("#askATFLink");
+          if (qaLink) {
+            const qm = qaLink.textContent.match(/([\d,]+)/);
+            if (qm) result.answered_questions = parseInt(qm[0].replace(/,/g, ""));
+          }
+
+          // bsr_ranks
+          result.bsr_ranks = [];
+          const bsrSeen = new Set();
+          const parseBSR = (container) => {
+            if (!container) return;
+            const text = container.textContent;
+            const regex = /#([\d,]+)\s+in\s+([A-Za-z][A-Za-z0-9 &'\-]{2,50})/g;
+            let bm;
+            while ((bm = regex.exec(text)) !== null) {
+              const rank = parseInt(bm[1].replace(/,/g, ""));
+              const cat = bm[2].trim();
+              const key = rank + "_" + cat;
+              if (!bsrSeen.has(key)) {
+                bsrSeen.add(key);
+                result.bsr_ranks.push({ rank, category: cat });
+              }
+            }
+          };
+          document.querySelectorAll("#productDetails_detailBullets_sections1 tr, #productDetails_db_sections tr, #prodDetails tr").forEach((row) => {
+            const th = row.querySelector("th");
+            if (th && th.textContent.toLowerCase().includes("best sellers rank")) {
+              parseBSR(row.querySelector("td"));
+            }
+          });
+          if (result.bsr_ranks.length === 0) parseBSR(document.querySelector("#SalesRank"));
+          if (result.bsr_ranks.length === 0) {
+            const detBullets = document.querySelector("#detailBullets_feature_div");
+            if (detBullets) {
+              detBullets.querySelectorAll("li").forEach((li) => {
+                if (li.textContent.toLowerCase().includes("best sellers rank")) parseBSR(li);
+              });
+            }
+          }
+
+          // seller, fulfilled_by
+          result.seller = "";
+          result.fulfilled_by = "";
+          const soldByDiv = document.querySelector('[offer-display-feature-name="desktop-merchant-info"]');
+          if (soldByDiv) {
+            const a = soldByDiv.querySelector("a");
+            result.seller = a ? a.textContent.trim() : "";
+            if (!result.seller) {
+              soldByDiv.querySelectorAll("span").forEach((s) => {
+                const t = s.textContent.trim();
+                if (t && t.toLowerCase() !== "sold by") result.seller = result.seller || t;
+              });
+            }
+          }
+          const shipsDiv = document.querySelector('[offer-display-feature-name="desktop-fulfiller-info"]');
+          if (shipsDiv) {
+            const a = shipsDiv.querySelector("a");
+            result.fulfilled_by = a ? a.textContent.trim() : "";
+            if (!result.fulfilled_by) {
+              shipsDiv.querySelectorAll("span").forEach((s) => {
+                const t = s.textContent.trim();
+                if (t && t.toLowerCase() !== "ships from") result.fulfilled_by = result.fulfilled_by || t;
+              });
+            }
+          }
+          if (!result.seller) {
+            const tabBuybox = document.querySelector("#tabular-buybox");
+            if (tabBuybox) {
+              const rows = tabBuybox.querySelectorAll(".tabular-buybox-text");
+              for (let ri = 0; ri < rows.length - 1; ri++) {
+                const label = rows[ri].textContent.trim().toLowerCase();
+                const valEl = rows[ri + 1];
+                const valA = valEl.querySelector("a");
+                const val = valA ? valA.textContent.trim() : valEl.textContent.trim();
+                if (label.includes("sold by")) result.seller = val;
+                if (label.includes("ships from")) result.fulfilled_by = val;
+              }
+            }
+          }
+          if (!result.seller) {
+            const merchant = document.querySelector("#merchant-info");
+            if (merchant) result.seller = merchant.textContent.trim();
+          }
+          if (!result.fulfilled_by) {
+            if (result.seller && result.seller.toLowerCase().includes("amazon")) {
+              result.fulfilled_by = "Amazon";
+            } else if (html.includes('"isAmazonFulfilled":true')) {
+              result.fulfilled_by = "Amazon (FBA)";
+            }
+          }
+
+          // is_addon
+          result.is_addon = !!document.querySelector("#addOnItem_feature_div, .addOnItem");
+
+          // delivery_info
+          result.delivery_info = "";
+          const delivEl = document.querySelector("#mir-layout-DELIVERY_BLOCK, #deliveryBlockMessage, #delivery-block-ags-dcp-block_0");
+          if (delivEl) result.delivery_info = delivEl.textContent.trim();
+
+          // schema_org
+          result.schema_org = {};
+          document.querySelectorAll('script[type="application/ld+json"]').forEach((s) => {
+            try {
+              const d = JSON.parse(s.textContent);
+              if (d && d["@type"] === "Product") result.schema_org = d;
+              if (d && d["@graph"]) {
+                d["@graph"].forEach((item) => {
+                  if (item["@type"] === "Product") result.schema_org = item;
+                });
+              }
+            } catch {}
+          });
+
+          // meta_tags
+          result.meta_tags = {};
+          document.querySelectorAll("meta[property], meta[name]").forEach((m) => {
+            const key = m.getAttribute("property") || m.getAttribute("name");
+            const val = m.getAttribute("content");
+            if (key && val) result.meta_tags[key] = val;
+          });
+
+          return result;
+        });
+        // ========== 추가 수집 끝 ==========
+
         if (!imageBlockATFData?.colorImages?.initial) {
           throw new Error("이미지 데이터를 추출할 수 없습니다.");
         }
         const result = {
           url: request.url,
-          // 상품 URL
           asin,
-          // Amazon Standard Identification Number
+          parent_asin: extraData.parent_asin || "",
           title,
-          // 상품 제목
           brand,
-          // 브랜드
           price: +price,
-          // 가격 (숫자 변환)
+          currency: extraData.currency || "",
+          original_price: extraData.original_price || 0,
+          discount_percent: extraData.discount_percent || 0,
+          coupon_text: extraData.coupon_text || "",
+          deal_type: extraData.deal_type || "",
+          subscribe_save_price: extraData.subscribe_save_price || 0,
+          is_prime: extraData.is_prime || false,
           options,
-          // 옵션 정보
           quantity: +quantity,
-          // 재고 수량
           tags,
-          // Breadcrumb 태그 배열
           category,
-          // 카테고리
           overview,
-          // 상품 개요 (스펙)
           aboutThis,
-          // 상품 특징
           images: imageBlockATFData.colorImages.initial,
-          // 이미지 배열
+          image_count: extraData.image_count || 0,
+          has_video: extraData.has_video || false,
+          description_text: extraData.description_text || "",
+          description_html: extraData.description_html || "",
+          aplus_html: extraData.aplus_html || "",
+          specifications: extraData.specifications || {},
+          rating: extraData.rating || 0,
+          reviews_count: extraData.reviews_count || 0,
+          rating_distribution: extraData.rating_distribution || {},
+          answered_questions: extraData.answered_questions || 0,
+          bsr_ranks: extraData.bsr_ranks || [],
+          date_first_available: extraData.date_first_available || "",
+          availability: extraData.delivery_info ? "In Stock" : "",
+          seller: extraData.seller || "",
+          fulfilled_by: extraData.fulfilled_by || "",
+          is_addon: extraData.is_addon || false,
+          delivery_info: extraData.delivery_info || "",
+          schema_org: extraData.schema_org || {},
+          meta_tags: extraData.meta_tags || {},
         };
+
         sendToRenderer("crawler:data", result);
         crawlerLog.info(
           `[크롤링] 수집 완료 [${asin}] ${title.substring(0, 50)}...`,
@@ -915,16 +1249,32 @@ class Crawler {
   static async stop(reason, silence = false) {
     if (!this.instance) return;
     this.isAborted = true;
+
+    // 중지 전 수집된 데이터 수 기록
+    let savedCount = 0;
+    try {
+      const dataset = await Crawler.DataSetOpen(Crawler.storageId);
+      const info = await dataset.getInfo();
+      savedCount = info?.itemCount || 0;
+      crawlerLog.info(`[크롤러] 중지 시점 저장된 상품: ${savedCount}개`);
+    } catch (e) {
+      crawlerLog.warn(`[크롤러] 중지 시 데이터 확인 실패: ${e}`);
+    }
+
     this.stopReason = {
-      reason: reason || "작업이 중지되었습니다.",
+      reason: reason || (savedCount > 0
+        ? `작업이 중지되었습니다. (${savedCount}개 상품 저장됨)`
+        : "작업이 중지되었습니다."),
       silence,
-      // true면 알림 표시 안 함
+      savedCount,
+      storageId: this.storageId,
     };
     await this.instance.autoscaledPool?.abort();
     await this.instance.browserPool.closeAllBrowsers();
     await this.instance.browserPool.destroy();
     await this.instance.teardown();
   }
+
   /**
    * 크롤링 중단 여부 확인 헬퍼
    * 라우터 핸들러에서 장시간 작업 사이에 호출하여

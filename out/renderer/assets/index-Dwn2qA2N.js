@@ -32703,12 +32703,12 @@ const _sfc_main$3 = /* @__PURE__ */ defineComponent({
       });
       window.api.onCrawlerTaskComplete((stopReason) => {
         if (stopReason) {
-          defaultStore.currentTaskState = "stoped";
+          defaultStore.currentTaskState = stopReason.savedCount > 0 ? "complete" : "stoped";
           if (stopReason.silence) return;
           ElNotification({
-            title: "작업 중지",
+            title: stopReason.savedCount > 0 ? "작업 중지 (데이터 저장됨)" : "작업 중지",
             message: stopReason.reason,
-            type: "error",
+            type: stopReason.savedCount > 0 ? "warning" : "error",
             position: "bottom-right"
           });
         } else {
