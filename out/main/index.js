@@ -54,6 +54,8 @@ const axios = require("axios");
 const http = require("http");
 const crypto = require("crypto");
 const supabaseJs = require("@supabase/supabase-js");
+const { generateAllTags } = require("./tag_engine");
+const { calculatePrice } = require("./price_engine");
 const icon = path.join(__dirname, "../../resources/icon.png");
 var LABEL = /* @__PURE__ */ ((LABEL2) => {
   LABEL2["INIT"] = "INIT";
@@ -1917,6 +1919,78 @@ class Shopify {
     }
     return `<div>${html}</div>`;
   }
+  buildEnhancedDescriptionHTML(aboutThis, overview, descriptionText, specifications) {
+    let html = "";
+
+    // Key Features (aboutThis)
+    if (aboutThis && aboutThis.length > 0) {
+      html += '<div class="sfx-features"><h3>Key Features</h3><ul>';
+      for (const item of aboutThis) {
+        let text = this.escapeHtml(item);
+        // 헤더:본문 패턴 감지
+        const m = text.match(/^([^:]{3,50}?)\s*:\s*(.{20,})$/);
+        if (m) {
+          html += `<li><strong>${m[1]}</strong> — ${m[2]}</li>`;
+        } else {
+          html += `<li>${text}</li>`;
+        }
+      }
+      html += "</ul></div>";
+    }
+
+    // Overview (specs table)
+    if (overview && overview.length > 0) {
+      html += '<div class="sfx-overview"><h3>Product Overview</h3><table>';
+      for (const item of overview) {
+        const parts = item.split(" : ");
+        if (parts.length === 2) {
+          html += `<tr><td><strong>${this.escapeHtml(parts[0].trim())}</strong></td><td>${this.escapeHtml(parts[1].trim())}</td></tr>`;
+        } else {
+          html += `<tr><td colspan="2">${this.escapeHtml(item)}</td></tr>`;
+        }
+      }
+      html += "</table></div>";
+    }
+
+    // Description
+    if (descriptionText && descriptionText.trim().length > 20) {
+      let desc = descriptionText.trim()
+        .replace(/About this item\s*/i, "")
+        .replace(/See more product details\s*$/i, "")
+        .trim();
+      if (desc) {
+        const paragraphs = desc.split(/\n{2,}/).filter((p) => p.trim().length >= 15);
+        if (paragraphs.length > 0) {
+          html += '<div class="sfx-description"><h3>Description</h3>';
+          html += paragraphs.map((p) => `<p>${this.escapeHtml(p.trim())}</p>`).join("");
+          html += "</div>";
+        }
+      }
+    }
+
+    // Specifications
+    if (specifications && typeof specifications === "object") {
+      const skipKeys = new Set([
+        "asin", "date first available", "date first listed on amazon",
+        "customer reviews", "best sellers rank", "best seller rank",
+        "manufacturer", "is discontinued by manufacturer",
+      ]);
+      const rows = Object.entries(specifications)
+        .filter(([k, v]) => !skipKeys.has(k.toLowerCase()) && v && String(v).trim())
+        .map(([k, v]) => `<tr><td><strong>${this.escapeHtml(k)}</strong></td><td>${this.escapeHtml(String(v))}</td></tr>`);
+      if (rows.length > 0) {
+        html += '<div class="sfx-specs"><h3>Specifications</h3><table class="sfx-spec-table">';
+        html += rows.join("");
+        html += "</table></div>";
+      }
+    }
+
+    if (!html) {
+      return `<div>${this.buildDescriptionHTML(aboutThis, overview)}</div>`;
+    }
+    return `<div>${html}</div>`;
+  }
+
   /**
    * ====================================
    * 크롤링 데이터 → Shopify JSONL 변환
@@ -1970,15 +2044,57 @@ class Shopify {
             weight,
             weightUnit,
             url,
+            // 새로 추가된 필드들
+            bsr_ranks,
+            rating,
+            reviews_count,
+            is_prime,
+            date_first_available,
+            original_price,
+            discount_percent,
+            description_text,
+            specifications,
+            seller,
+            fulfilled_by,
           } = data;
+
           const safeTitle =
             title && title.length > 255
               ? title.substring(0, 252) + "..."
               : title;
-          const descriptionHtml = this.buildDescriptionHTML(
+
+          // ===== 새 태그 엔진 적용 =====
+          const tagEngineInput = {
+            title,
+            brand,
+            price,
+            tags, // breadcrumb array
+            category_breadcrumb: tags, // tag_engine에서 사용
+            aboutThis,
+            bullet_points: aboutThis,
+            bsr_ranks: bsr_ranks || [],
+            rating: rating || 0,
+            is_prime: is_prime || false,
+            date_first_available: date_first_available || "",
+          };
+          const generatedTags = generateAllTags(tagEngineInput);
+
+          // ===== 새 가격 엔진 적용 =====
+          const priceInput = {
+            price,
+            tags,
+            category_breadcrumb: tags,
+          };
+          const pricing = calculatePrice(priceInput);
+
+          // ===== 개선된 description HTML =====
+          const descriptionHtml = this.buildEnhancedDescriptionHTML(
             aboutThis,
             overview,
+            description_text,
+            specifications,
           );
+
           let processedCategory = category;
           if (category && category.trim()) {
             processedCategory = category.trim().replace(/\s+/g, " ");
@@ -1986,10 +2102,7 @@ class Shopify {
           } else {
             processedCategory = "General";
           }
-          const finalPrice =
-            typeof price === "number" && price > 0
-              ? price + (price * this.margin) / 100
-              : 0;
+
           let weightInGrams;
           if (weight && weightUnit) {
             if (weightUnit === "kg") {
@@ -2000,13 +2113,36 @@ class Shopify {
               weightInGrams = Math.round(weight * 28.3495);
             }
           }
+
+          // specs에서 무게 추출 (weight가 없을 때)
+          if (!weightInGrams && specifications) {
+            for (const key of ["Item Weight", "Weight", "Package Weight"]) {
+              if (specifications[key]) {
+                const wm = specifications[key].match(/([\d.]+)\s*(lb|oz|kg|g)\b/i);
+                if (wm) {
+                  const val = parseFloat(wm[1]);
+                  const unit = wm[2].toLowerCase();
+                  if (unit === "lb") weightInGrams = Math.round(val * 453.592);
+                  else if (unit === "oz") weightInGrams = Math.round(val * 28.3495);
+                  else if (unit === "kg") weightInGrams = Math.round(val * 1000);
+                  else if (unit === "g") weightInGrams = Math.round(val);
+                  break;
+                }
+              }
+            }
+          }
+
           const productOptions = [
             { name: "Title", position: 1, values: [{ name: "Default Title" }] },
           ];
+
           const variants = [
             {
               optionValues: [{ optionName: "Title", name: "Default Title" }],
-              price: finalPrice.toString(),
+              price: pricing.price.toString(),
+              compareAtPrice: pricing.compare_at_price > pricing.price
+                ? pricing.compare_at_price.toString()
+                : undefined,
               sku: asin,
               inventoryItem: { tracked: true },
               inventoryQuantities:
@@ -2015,49 +2151,41 @@ class Shopify {
                   : void 0,
               inventoryPolicy: "DENY",
               weight: weightInGrams ? weightInGrams / 1e3 : void 0,
-              // kg 단위
               weightUnit: weightInGrams ? "KILOGRAMS" : void 0,
             },
           ];
+
           const matchedRule = this.chooseRule(category || "", tags || []);
           const shopifyTaxonomyId = matchedRule?.taxonomyId;
-          const safeTags =
-            tags && tags.length > 0
-              ? [...tags, processedCategory].filter(Boolean)
-              : [processedCategory].filter(Boolean);
+
           const inputData = {
             handle: asin,
-            // URL 경로 (ASIN 사용)
             title: safeTitle,
-            // 상품 제목 (255자 제한 적용)
             vendor: brand,
-            // 브랜드 (판매자)
             productType: processedCategory,
-            // 상품 타입 (카테고리 텍스트)
             category: shopifyTaxonomyId
               ? `gid://shopify/TaxonomyCategory/${shopifyTaxonomyId}`
               : void 0,
-            tags: safeTags,
-            // 태그 배열
-            status: ProductStatus.Active,
-            // 상품 상태
+            tags: generatedTags,
+            status: "ACTIVE",
             descriptionHtml,
-            // HTML 설명 (문자열 템플릿)
-            metafields: url
-              ? [
-                  {
-                    namespace: "amazon",
-                    key: "source_url",
-                    type: "url",
-                    value: url,
-                  },
-                ]
-              : void 0,
+            metafields: [
+              ...(url
+                ? [{ namespace: "amazon", key: "source_url", type: "url", value: url }]
+                : []),
+              { namespace: "amazon", key: "asin", type: "single_line_text_field", value: asin || "" },
+              { namespace: "amazon", key: "original_price", type: "number_decimal", value: String(price || 0) },
+              { namespace: "amazon", key: "seller", type: "single_line_text_field", value: seller || "" },
+              { namespace: "amazon", key: "fulfilled_by", type: "single_line_text_field", value: fulfilled_by || "" },
+              { namespace: "amazon", key: "rating", type: "number_decimal", value: String(rating || 0) },
+              { namespace: "amazon", key: "reviews_count", type: "number_integer", value: String(reviews_count || 0) },
+              { namespace: "amazon", key: "margin_percent", type: "number_integer", value: String(pricing.margin_percent) },
+              { namespace: "amazon", key: "cost_per_item", type: "number_decimal", value: String(pricing.cost_per_item) },
+            ],
             productOptions,
-            // 상품 옵션
             variants,
-            // variants (가격, 재고 포함)
           };
+
           const fileInputs = (images || [])
             .map((image) => {
               const mainImgKeys = Object.keys(image.main || {});
@@ -2067,6 +2195,7 @@ class Shopify {
               };
             })
             .filter((f) => f.originalSource);
+
           const jsonl = {
             input: {
               ...inputData,
@@ -2090,6 +2219,7 @@ class Shopify {
       failed: failedProducts,
     };
   }
+
   /**
    * ====================================
    * 공유 데이터 준비 (Static 메서드)
