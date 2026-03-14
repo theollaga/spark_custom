@@ -589,6 +589,32 @@ if (process.platform === "win32") {
   global.CRAWLEE_DISABLE_V8_SOURCE_MAPS = true;
   process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS || ""} --no-heap-snapshot --no-memory-snapshot --no-v8-profiler --no-perf-hooks --no-inspector`;
 }
+const blockUnnecessaryResources = async (crawlingContext) => {
+  const { page } = crawlingContext;
+  await page.route("**/*", (route) => {
+    const type = route.request().resourceType();
+    const url = route.request().url();
+    const blocked = ["image", "media", "font", "stylesheet"];
+    const blockedUrls = [
+      "google-analytics.com",
+      "googletagmanager.com",
+      "doubleclick.net",
+      "facebook.net",
+      "googlesyndication.com",
+      "amazon-adsystem.com",
+      "fls-na.amazon.com",
+      "unagi.amazon.com",
+      "completion.amazon.com",
+    ];
+    if (blocked.includes(type)) {
+      return route.abort();
+    }
+    if (blockedUrls.some((domain) => url.includes(domain))) {
+      return route.abort();
+    }
+    return route.continue();
+  });
+};
 const navigationHook = async (crawlingContext) => {
   await pageSolver1(crawlingContext);
   await checkDelivery(crawlingContext);
@@ -802,11 +828,12 @@ class Crawler {
         // Headless 모드 설정 (isHeadless가 false면 브라우저 UI 표시)
         headless: !isHeadless,
         // 페이지 이동 후 실행할 훅 (로그 전송 등)
+        preNavigationHooks: [blockUnnecessaryResources],
         postNavigationHooks: [navigationHook],
         // 재시도 및 타임아웃 설정
         maxRequestRetries: 3,
         // 실패 시 최대 3번 재시도
-        requestHandlerTimeoutSecs: 600,
+        requestHandlerTimeoutSecs: 180,
         // 요청당 최대 10분 (복잡한 페이지 대응)
         // 동시 실행 수 (1로 설정하여 순차 실행)
         maxConcurrency: 1,
