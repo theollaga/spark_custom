@@ -476,6 +476,8 @@ const addDetailRouter = (router2) => {
             ".basisPrice .a-offscreen",
             "#listPrice .a-offscreen",
             ".a-price[data-a-color='secondary'] .a-offscreen",
+            ".centralizedApexPriceSavingsPercentageMargin .a-offscreen",
+            ".savingPriceOverride .a-offscreen",
           ];
           for (const sel of origSelectors) {
             const el = document.querySelector(sel);
@@ -489,8 +491,15 @@ const addDetailRouter = (router2) => {
           result.discount_percent = 0;
           const discountEl = document.querySelector(".savingsPercentage");
           if (discountEl) {
-            const dm = discountEl.textContent.match(/(\d+)/);
+            const dm = discountEl.textContent.match(/(\d+)\s*%/);
             if (dm) result.discount_percent = parseInt(dm[1]);
+          }
+          // fallback: calculate from original_price and current price
+          if (!result.discount_percent && result.original_price > 0) {
+            const currentPrice = parseFloat(document.querySelector("span.a-price .a-offscreen")?.textContent?.replace(/[^0-9.]/g, "") || "0");
+            if (currentPrice > 0 && result.original_price > currentPrice) {
+              result.discount_percent = Math.round((1 - currentPrice / result.original_price) * 100);
+            }
           }
 
           // coupon_text
@@ -663,31 +672,36 @@ const addDetailRouter = (router2) => {
             }
           }
 
-          // seller, fulfilled_by
+          // seller, fulfilled_by (2026 Amazon accordion layout)
           result.seller = "";
           result.fulfilled_by = "";
-          const soldByDiv = document.querySelector('[offer-display-feature-name="desktop-merchant-info"]');
-          if (soldByDiv) {
-            const a = soldByDiv.querySelector("a");
-            result.seller = a ? a.textContent.trim() : "";
-            if (!result.seller) {
-              soldByDiv.querySelectorAll("span").forEach((s) => {
-                const t = s.textContent.trim();
-                if (t && t.toLowerCase() !== "sold by") result.seller = result.seller || t;
-              });
-            }
+          
+          // Method 1: sfsb_accordion_head (축약 정보)
+          const sfsbHead = document.querySelector("#sfsb_accordion_head");
+          if (sfsbHead) {
+            const rows = sfsbHead.querySelectorAll(".a-row");
+            rows.forEach((row) => {
+              const spans = row.querySelectorAll("span.a-size-small");
+              if (spans.length >= 2) {
+                const label = spans[0].textContent.trim().toLowerCase();
+                const value = spans[1].textContent.trim();
+                if (label.includes("ships from")) result.fulfilled_by = value;
+                if (label.includes("sold by")) result.seller = value;
+              }
+            });
           }
-          const shipsDiv = document.querySelector('[offer-display-feature-name="desktop-fulfiller-info"]');
-          if (shipsDiv) {
-            const a = shipsDiv.querySelector("a");
-            result.fulfilled_by = a ? a.textContent.trim() : "";
-            if (!result.fulfilled_by) {
-              shipsDiv.querySelectorAll("span").forEach((s) => {
-                const t = s.textContent.trim();
-                if (t && t.toLowerCase() !== "ships from") result.fulfilled_by = result.fulfilled_by || t;
-              });
-            }
+          
+          // Method 2: offer-display-feature-text (상세 정보, fallback)
+          if (!result.seller) {
+            const merchantText = document.querySelector('[offer-display-feature-name="desktop-merchant-info"].offer-display-feature-text .offer-display-feature-text-message');
+            if (merchantText) result.seller = merchantText.textContent.trim();
           }
+          if (!result.fulfilled_by) {
+            const fulfillerText = document.querySelector('[offer-display-feature-name="desktop-fulfiller-info"].offer-display-feature-text .offer-display-feature-text-message');
+            if (fulfillerText) result.fulfilled_by = fulfillerText.textContent.trim();
+          }
+          
+          // Method 3: legacy selectors (이전 레이아웃 호환)
           if (!result.seller) {
             const tabBuybox = document.querySelector("#tabular-buybox");
             if (tabBuybox) {
@@ -709,7 +723,7 @@ const addDetailRouter = (router2) => {
           if (!result.fulfilled_by) {
             if (result.seller && result.seller.toLowerCase().includes("amazon")) {
               result.fulfilled_by = "Amazon";
-            } else if (html.includes('"isAmazonFulfilled":true')) {
+            } else if (document.documentElement.innerHTML.includes('"isAmazonFulfilled":true')) {
               result.fulfilled_by = "Amazon (FBA)";
             }
           }
@@ -746,6 +760,7 @@ const addDetailRouter = (router2) => {
 
           return result;
         });
+
         // ========== 추가 수집 끝 ==========
 
         if (!imageBlockATFData?.colorImages?.initial) {
@@ -928,7 +943,7 @@ const blockUnnecessaryResources = async (crawlingContext) => {
   await page.route("**/*", (route) => {
     const type = route.request().resourceType();
     const url = route.request().url();
-    const blocked = ["image", "media", "font", "stylesheet"];
+    const blocked = ["media", "font", "stylesheet"];
     const blockedUrls = [
       "google-analytics.com",
       "googletagmanager.com",
