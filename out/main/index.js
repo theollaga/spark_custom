@@ -5423,34 +5423,35 @@ const subscribeToUserChannel = async (
 let currentSessionId = null;
 const authIpc = () => {
   electron.ipcMain.handle("auth:login", async (_event, userId, password) => {
-    try {
-      const result = await loginByUserId(userId, password);
-      return result;
-    } catch (error) {
-      log.error("[Auth] 로그인 에러:", error);
-      return {
-        error: { message: "로그인 중 오류가 발생했습니다.", code: 500 },
-      };
-    }
-  });
+      try {
+        // 인증 우회 - 항상 성공 반환
+        log.info("[Auth] 인증 우회 - 자동 로그인");
+        return {
+          data: {
+            user: { id: "local-user", email: "local@spark.custom" },
+            session: { access_token: "bypass" },
+            profile: {
+              id: "local-user",
+              user_id: userId || "admin",
+              email: "local@spark.custom",
+              spark_approved: true,
+              spark_expires_at: "2099-12-31T23:59:59Z",
+            },
+          },
+        };
+      } catch (error) {
+        log.error("[Auth] 로그인 에러:", error);
+        return {
+          error: { message: "로그인 중 오류가 발생했습니다.", code: 500 },
+        };
+      }
+    });
   electron.ipcMain.handle(
     "auth:connectRealtime",
     async (_event, userId, forceLogin = false) => {
-      try {
-        currentSessionId = crypto.randomUUID();
-        const success = await subscribeToUserChannel(
-          userId,
-          currentSessionId,
-          (message) => {
-            sendToRenderer("auth:forceLogout", message);
-          },
-          forceLogin,
-        );
-        return success;
-      } catch (error) {
-        log.error("[Auth] Realtime 연결 에러:", error);
-        return true;
-      }
+      // Realtime 구독 우회
+      log.info("[Auth] Realtime 우회 - 중복 로그인 체크 건너뜀");
+      return true;
     },
   );
   electron.ipcMain.handle("auth:logout", async () => {
