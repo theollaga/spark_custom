@@ -5531,6 +5531,30 @@ function createWindow() {
   mainWindow.on("ready-to-show", () => {
     mainWindow.show();
   });
+  mainWindow.webContents.on("did-finish-load", () => {
+    mainWindow.webContents.executeJavaScript(`
+      (function() {
+        try {
+          const fakeProfile = {
+            id: "local-user",
+            user_id: "admin",
+            email: "local@spark.custom",
+            spark_approved: true,
+            spark_expires_at: "2099-12-31T23:59:59Z"
+          };
+          const fakeUser = { id: "local-user", email: "local@spark.custom" };
+          const fakeSession = { access_token: "bypass" };
+          localStorage.setItem("spark_user", JSON.stringify(fakeUser));
+          localStorage.setItem("spark_profile", JSON.stringify(fakeProfile));
+          localStorage.setItem("spark_session", JSON.stringify(fakeSession));
+          localStorage.setItem("spark_auth", "true");
+          console.log("[AutoLogin] localStorage set, reloading...");
+        } catch(e) {
+          console.error("[AutoLogin] error:", e);
+        }
+      })();
+    `);
+  });
   mainWindow.webContents.setWindowOpenHandler((details) => {
     electron.shell.openExternal(details.url);
     return { action: "deny" };

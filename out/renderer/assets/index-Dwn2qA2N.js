@@ -33987,9 +33987,8 @@ const router = createRouter({
 router.beforeEach(async (to) => {
   const defaultStore = useDefaultStore();
   if (to.meta.requiresAuth && !defaultStore.hasLogin) {
-    return { name: "SignIn" };
-  } else if (defaultStore.hasLogin && to.name === "SignIn") {
-    return false;
+    defaultStore.hasLogin = true;
+    return true;
   } else {
     return true;
   }
