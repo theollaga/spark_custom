@@ -2085,7 +2085,7 @@ class Shopify {
             tags,
             category_breadcrumb: tags,
           };
-          const pricing = calculatePrice(priceInput);
+          const pricing = calculatePrice(priceInput, this.margin);
 
           // ===== 개선된 description HTML =====
           const descriptionHtml = this.buildEnhancedDescriptionHTML(

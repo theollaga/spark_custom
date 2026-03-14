@@ -29,7 +29,7 @@ function roundTo99(price) {
   return Math.floor(price) + 0.99;
 }
 
-function calculatePrice(product) {
+function calculatePrice(product, customMargin) {
   const amazonPrice = product.price || 0;
 
   if (!amazonPrice || amazonPrice <= 0) {
@@ -43,12 +43,17 @@ function calculatePrice(product) {
     };
   }
 
-  // 카테고리별 마진율 결정
-  const breadcrumb = product.tags || product.category_breadcrumb || [];
-  let margin = DEFAULT_MARGIN;
-  if (Array.isArray(breadcrumb) && breadcrumb.length > 0) {
-    const topCategory = breadcrumb[0];
-    margin = CATEGORY_MARGINS[topCategory] || DEFAULT_MARGIN;
+  // 마진율 결정: 사용자 설정값 우선, 없으면 카테고리별
+  let margin;
+  if (typeof customMargin === "number" && customMargin > 0) {
+    margin = customMargin;
+  } else {
+    const breadcrumb = product.tags || product.category_breadcrumb || [];
+    margin = DEFAULT_MARGIN;
+    if (Array.isArray(breadcrumb) && breadcrumb.length > 0) {
+      const topCategory = breadcrumb[0];
+      margin = CATEGORY_MARGINS[topCategory] || DEFAULT_MARGIN;
+    }
   }
 
   // 마진 적용
