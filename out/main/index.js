@@ -6109,7 +6109,14 @@ function createWindow() {
           localStorage.setItem("spark_session", JSON.stringify(fakeSession));
           localStorage.setItem("spark_auth", "true");
           console.log("[AutoLogin] localStorage set, reloading...");
-        } catch(e) {
+          setTimeout(() => {
+            document.addEventListener('mousemove', function _guideHandler() {
+              document.removeEventListener('mousemove', _guideHandler);
+              window.electron?.ipcRenderer?.send('show-guide');
+            });
+          }, 5000);
+          
+          } catch(e) {
           console.error("[AutoLogin] error:", e);
         }
       })();
@@ -6275,7 +6282,102 @@ electron.app.whenReady().then(async () => {
     }
   });
   log.info("일시정지 단축키 등록: F6");
+
+    // F7: 검색어 일괄 입력 → GUI 수집 링크에 추가
+  electron.globalShortcut.register("F7", () => {
+    const inputWindow = new electron.BrowserWindow({
+      width: 600, height: 400, parent: mainWindow, modal: true,
+      webPreferences: { nodeIntegration: true, contextIsolation: false },
+      title: "검색어 일괄 입력",
+      autoHideMenuBar: true,
+    });
+    inputWindow.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`
+      <html><head><style>
+        body{font-family:'Segoe UI',sans-serif;padding:20px;background:#1e1e1e;color:#fff}
+        h3{margin-top:0}
+        textarea{width:100%;height:180px;font-size:14px;padding:10px;border-radius:6px;border:1px solid #555;background:#2d2d2d;color:#fff;resize:none}
+        .btn{padding:10px 24px;font-size:14px;border:none;border-radius:6px;cursor:pointer;margin-right:10px;margin-top:10px}
+        .btn-add{background:#0078d4;color:#fff}
+        .btn-cancel{background:#555;color:#fff}
+        .info{font-size:12px;color:#aaa;margin-top:8px}
+      </style></head><body>
+        <h3>Amazon 검색어 일괄 입력</h3>
+        <textarea id="keywords" placeholder="예: car trunk organizer, car seat cover, car cleaning kit"></textarea>
+        <div class="info">콤마(,)로 구분하여 여러 검색어를 입력하세요. 수집 링크 목록에 추가됩니다.</div>
+        <div>
+          <button class="btn btn-add" onclick="addToList()">링크 추가</button>
+          <button class="btn btn-cancel" onclick="window.close()">취소</button>
+        </div>
+        <script>
+          const{ipcRenderer}=require('electron');
+          function addToList(){
+            const text=document.getElementById('keywords').value.trim();
+            if(!text)return alert('검색어를 입력하세요.');
+            const keywords=text.split(',').map(k=>k.trim()).filter(k=>k.length>0);
+            if(keywords.length===0)return alert('검색어를 입력하세요.');
+            ipcRenderer.send('f7-add-links',keywords);
+            window.close();
+          }
+        </script>
+      </body></html>
+    `));
+  });
+  electron.ipcMain.on("f7-add-links", (_event, keywords) => {
+    const urls = keywords.map(k => ({
+      url: "https://www.amazon.com/s?k=" + encodeURIComponent(k).replace(/%20/g, "+"),
+      label: "AMAZON_PRODUCT_LIST"
+    }));
+    mainWindow.webContents.executeJavaScript(`
+      (function(){
+        try {
+          const store = window.__pinia_store__ || null;
+          const tasks = ${JSON.stringify(urls)};
+          tasks.forEach(t => {
+            const event = new CustomEvent('f7-add-task', { detail: t });
+            window.dispatchEvent(event);
+          });
+        } catch(e) { console.error('F7 add failed:', e); }
+      })();
+    `);
+    // fallback: IPC로도 전송
+    mainWindow.webContents.send("f7-add-tasks", urls);
+    log.info("F7 검색어 링크 추가:", urls.length + "개");
+    mainWindow.webContents.send("crawler:log", {
+      label: "", url: "", level: "info", timestamp: Date.now(),
+      message: "F7 검색어 " + keywords.length + "개 링크 추가됨: " + keywords.join(", ")
+    });
+  });
+  log.info("검색어 일괄입력 단축키 등록: F7");
+
   appUpdateCheck(mainWindow);
+  let guideShown = false;
+  electron.ipcMain.on("show-guide", () => {
+    if (guideShown) return;
+    guideShown = true;
+    const guideWindow = new electron.BrowserWindow({
+      width: 420, height: 320, parent: mainWindow, modal: true,
+      resizable: false, autoHideMenuBar: true,
+      title: "SparkCustom 단축키 안내",
+      webPreferences: { nodeIntegration: false, contextIsolation: true },
+    });
+    guideWindow.loadURL("data:text/html;charset=utf-8," + encodeURIComponent(`
+      <html><head><style>
+        body{font-family:'Segoe UI',sans-serif;padding:30px;background:#1e1e1e;color:#fff;margin:0}
+        h2{margin-top:0;color:#0078d4}
+        .key{display:inline-block;background:#333;border:1px solid #555;border-radius:6px;padding:4px 12px;font-weight:bold;font-size:16px;color:#0078d4;margin-right:8px}
+        .desc{font-size:14px;margin-bottom:16px;line-height:1.6}
+        .btn{padding:10px 30px;font-size:14px;border:none;border-radius:6px;cursor:pointer;background:#0078d4;color:#fff;margin-top:10px}
+        .note{font-size:11px;color:#888;margin-top:16px}
+      </style></head><body>
+        <h2>SparkCustom 단축키</h2>
+        <div class="desc"><span class="key">F6</span> 수집 일시정지 / 재개</div>
+        <div class="desc"><span class="key">F7</span> 검색어 일괄 입력 (수집 링크 자동 추가)</div>
+        <div style="text-align:center"><button class="btn" onclick="window.close()">확인</button></div>
+        <div class="note">이 안내는 앱 시작 시 1회 표시됩니다.</div>
+      </body></html>
+    `));
+  });
+
   electron.app.on("activate", function () {
     if (electron.BrowserWindow.getAllWindows().length === 0) createWindow();
   });

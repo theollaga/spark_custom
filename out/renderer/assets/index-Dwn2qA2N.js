@@ -31559,6 +31559,12 @@ const useDefaultStore = /* @__PURE__ */ defineStore("default", () => {
   const showCreateTaskDialog = ref(false);
   const showTaskHistoryDialog = ref(false);
   const taskList = ref([]);
+  // F7 검색어 링크 수신
+  if (window.electron && window.electron.ipcRenderer) {
+    window.electron.ipcRenderer.on("f7-add-tasks", (_event, urls) => {
+      urls.forEach(t => { taskList.value.push({ url: t.url, label: t.label }); });
+    });
+  }
   const currentTaskId = ref("");
   const currentTaskState = ref("stoped");
   const isTaskRunning = computed(() => currentTaskId.value !== "" && currentTaskState.value === "running");
