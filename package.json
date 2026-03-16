@@ -86,9 +86,6 @@
       "createStartMenuShortcut": true,
       "shortcutName": "SparkCustom"
     },
-    "asar": true,
-    "asarUnpack": [
-      "node_modules/**"
-    ]
+    "asar": false
   }
 }
