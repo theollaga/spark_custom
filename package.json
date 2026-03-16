@@ -62,7 +62,7 @@
     "extraResources": [
       {
         "from": "resources",
-        "to": "resources",
+        "to": "app.asar.unpacked/resources",
         "filter": [
           "**/*"
         ]
