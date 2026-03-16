@@ -496,6 +496,11 @@ const addDetailRouter = (router2) => {
             const dm = discountEl.textContent.match(/(\d+)\s*%/);
             if (dm) result.discount_percent = parseInt(dm[1]);
           }
+          // original_price 검증: 현재가보다 낮으면 무효
+          const _curPrice = parseFloat(document.querySelector("span.a-price .a-offscreen")?.textContent?.replace(/[^0-9.]/g, "") || "0");
+          if (result.original_price > 0 && _curPrice > 0 && result.original_price <= _curPrice) {
+            result.original_price = 0;
+          }
           // fallback: calculate from original_price and current price
           if (!result.discount_percent && result.original_price > 0) {
             const currentPrice = parseFloat(document.querySelector("span.a-price .a-offscreen")?.textContent?.replace(/[^0-9.]/g, "") || "0");
@@ -1062,7 +1067,11 @@ const checkDelivery = async (crawlingContext) => {
       }
       try {
         crawlee.log.info(`[배송지] 변경 시도 ${index + 1}/3`);
-        await page.locator("#glow-ingress-block").click();
+        // Trade-In 오버레이 닫기
+        await page.evaluate(() => {
+          document.querySelectorAll('[data-component-id="darkened-background"], [class*="Sidesheet"]').forEach(el => el.remove());
+        });
+        await page.locator("#glow-ingress-block").click({ timeout: 5000 });
         await page.waitForSelector("#GLUXZipUpdateInput", {
           state: "visible",
           timeout: 3e4,
@@ -1206,6 +1215,10 @@ class Crawler {
         // 요청당 최대 10분 (복잡한 페이지 대응)
         // 동시 실행 수 (1로 설정하여 순차 실행)
         maxConcurrency: 1,
+        browserPoolOptions: {
+          maxOpenPagesPerBrowser: 10,
+          retireBrowserAfterPageCount: 20,
+        },      
         /**
          * Chromium 실행 옵션
          * 안정성과 wmic 오류 방지를 위한 다양한 플래그 설정
