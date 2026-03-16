@@ -2,3 +2,5 @@
 resources/
 *.zip
 *.exe
+
+dist/
