@@ -76,7 +76,7 @@ const addProductListRouter = (router2) => {
         level: "info",
         timestamp: Date.now(),
       });
-      Crawler.checkAborted();
+      await Crawler.checkAborted();
       const productItemLinkSelector =
         '[data-component-type="s-search-result"]:not(.AdHolder) .s-product-image-container a';
       await page.waitForSelector(productItemLinkSelector, {
@@ -86,7 +86,7 @@ const addProductListRouter = (router2) => {
         .locator('[data-component-type="s-search-result"]:not(.AdHolder)')
         .all();
       let primeProductLinks = [];
-      Crawler.checkAborted();
+      await Crawler.checkAborted();
       for (const product of products) {
         if (global.isPrime) {
           if (
@@ -159,7 +159,7 @@ const addASINRouter = (router2) => {
         timestamp: Date.now(),
       });
       try {
-        Crawler.checkAborted();
+        await Crawler.checkAborted();
         const twisterData = await page.evaluate(async () => {
           try {
             const twisterJSInitData2 =
@@ -210,7 +210,7 @@ const addDetailRouter = (router2) => {
         timestamp: Date.now(),
       });
       try {
-        Crawler.checkAborted();
+        await Crawler.checkAborted();
         const buyNowLoc = page.locator("#buyNow");
         const isUnavailableProduct = (await buyNowLoc.count()) === 0;
         if (isUnavailableProduct) {
@@ -260,7 +260,7 @@ const addDetailRouter = (router2) => {
           });
           return;
         }
-        Crawler.checkAborted();
+        await Crawler.checkAborted();
         const titleLoc = page.locator("span#productTitle");
         const title = await titleLoc.innerText();
         const brandLoc = page.locator("a#bylineInfo");
@@ -300,7 +300,7 @@ const addDetailRouter = (router2) => {
         );
         const tags = await breadcrumbLoc.allInnerTexts();
         const category = tags[tags.length - 1];
-        Crawler.checkAborted();
+        await Crawler.checkAborted();
         const haveProductFactsDesktopLoc =
           (await page.locator("#productFactsDesktop_feature_div").count()) > 0;
         const haveNutritionAboutThisLoc =
@@ -352,7 +352,7 @@ const addDetailRouter = (router2) => {
           const itemText = (await item.innerText()).trim();
           aboutThis.push(itemText);
         }
-        Crawler.checkAborted();
+        await Crawler.checkAborted();
         const twisterData = await page.evaluate(async () => {
           try {
             const twisterJSInitData2 =
@@ -373,7 +373,7 @@ const addDetailRouter = (router2) => {
         if (!asin) {
           throw new Error("asin error");
         }
-        Crawler.checkAborted();
+        await Crawler.checkAborted();
         const imageBlockATFData = await page.evaluate(() => {
           const scripts = document.querySelectorAll(
             "#imageBlock_feature_div script",
@@ -1114,6 +1114,24 @@ class Crawler {
   static storageId;
   /** 크롤링 중단 플래그 - 라우터 핸들러에서 체크하여 즉시 중단 */
   static isAborted = false;
+  static isPaused = false;
+  static pauseResolve = null;
+  static async waitIfPaused() {
+    while (this.isPaused) {
+      await new Promise((resolve) => { this.pauseResolve = resolve; });
+    }
+  }
+  static pause() {
+    this.isPaused = true;
+    log.info("crawler:paused");
+    sendToRenderer("crawler:paused");
+  }
+  static resume() {
+    this.isPaused = false;
+    if (this.pauseResolve) { this.pauseResolve(); this.pauseResolve = null; }
+    log.info("crawler:resumed");
+    sendToRenderer("crawler:resumed");
+  }
   /**
    * ====================================
    * 크롤러 초기화 메서드
@@ -1297,7 +1315,8 @@ class Crawler {
    * 라우터 핸들러에서 장시간 작업 사이에 호출하여
    * 중단 요청이 있으면 에러를 throw합니다.
    */
-  static checkAborted() {
+  static async checkAborted() {
+    await this.waitIfPaused();
     if (this.isAborted) {
       throw new Error("CRAWLER_ABORTED");
     }
@@ -1452,6 +1471,12 @@ const crawlerIPC = () => {
   );
   electron.ipcMain.handle("crawler:stop", async () => {
     await Crawler.stop();
+  });
+  electron.ipcMain.handle("crawler:pause", async () => {
+    Crawler.pause();
+  });
+  electron.ipcMain.handle("crawler:resume", async () => {
+    Crawler.resume();
   });
   electron.ipcMain.handle("crawler:getDataInfo", async (_event, storageId) => {
     const dsStorage = await Crawler.DataSetOpen(storageId);
@@ -6220,6 +6245,23 @@ electron.app.whenReady().then(async () => {
     });
     log.info("DevTools 단축키 활성화됨 (Ctrl+Shift+I)");
   }
+  // 일시정지/재개 단축키: F6
+  electron.globalShortcut.register("F6", () => {
+    if (Crawler.isPaused) {
+      Crawler.resume();
+      mainWindow.webContents.send("crawler:log", {
+        label: "", url: "", level: "info", timestamp: Date.now(),
+        message: "▶ 작업 재개됨 (F6)"
+      });
+    } else {
+      Crawler.pause();
+      mainWindow.webContents.send("crawler:log", {
+        label: "", url: "", level: "warning", timestamp: Date.now(),
+        message: "⏸ 작업 일시정지됨 (F6으로 재개)"
+      });
+    }
+  });
+  log.info("일시정지 단축키 등록: F6");
   appUpdateCheck(mainWindow);
   electron.app.on("activate", function () {
     if (electron.BrowserWindow.getAllWindows().length === 0) createWindow();
