@@ -86,6 +86,12 @@
       "createStartMenuShortcut": true,
       "shortcutName": "SparkCustom"
     },
-    "asar": true
+    "asar": true,
+    "asarUnpack": [
+      "node_modules/generative-bayesian-network/**",
+      "node_modules/header-generator/**",
+      "node_modules/fingerprint-generator/**",
+      "node_modules/adm-zip/**"
+    ]
   }
 }
