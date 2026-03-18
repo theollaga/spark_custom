@@ -69,6 +69,14 @@ const addProductListRouter = (router2) => {
     LABEL.AMAZON_PRODUCT_LIST,
     async ({ request, page, enqueueLinks, log: log2 }) => {
       log2.info(`${request.label} : ${request.url}`);
+      // 검색 URL에서 키워드 추출
+      const searchKeyword = (() => {
+        try {
+          const urlObj = new URL(request.url);
+          const k = urlObj.searchParams.get("k") || "";
+          return k.replace(/\+/g, " ").trim();
+        } catch { return ""; }
+      })();
       sendLogToRenderer({
         label: request.label || "",
         url: request.url,
@@ -129,6 +137,7 @@ const addProductListRouter = (router2) => {
       await enqueueLinks({
         urls: primeProductLinks,
         label: LABEL.AMAZON_PRODUCT_ASIN,
+        userData: { searchKeyword: searchKeyword || request.userData?.searchKeyword || "" },
       });
       const nextButton = page.locator(".s-pagination-next");
       const hasNext = (await nextButton.count()) > 0;
@@ -139,6 +148,7 @@ const addProductListRouter = (router2) => {
         await enqueueLinks({
           selector: ".s-pagination-next",
           label: LABEL.AMAZON_PRODUCT_LIST,
+          userData: { searchKeyword: searchKeyword || request.userData?.searchKeyword || "" },
         });
       } else {
         crawlerLog.info(`[크롤링] ${pageInfo.currentPage}페이지 완료 (마지막)`);
@@ -190,6 +200,7 @@ const addASINRouter = (router2) => {
           urls: asinLinkList,
           label: LABEL.AMAZON_PRODUCT_DETAIL,
           forefront: true,
+          userData: { searchKeyword: request.userData?.searchKeyword || "" },
         });
       } catch (error) {
         log2.error(`err : ${error}`);
@@ -300,6 +311,11 @@ const addDetailRouter = (router2) => {
         );
         const tags = await breadcrumbLoc.allInnerTexts();
         const category = tags[tags.length - 1];
+        // 검색 키워드를 태그에 추가
+        const searchKeyword = request.userData?.searchKeyword || "";
+        if (searchKeyword && !tags.includes(searchKeyword)) {
+          tags.unshift(searchKeyword);
+        }
         await Crawler.checkAborted();
         const haveProductFactsDesktopLoc =
           (await page.locator("#productFactsDesktop_feature_div").count()) > 0;
