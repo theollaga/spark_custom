@@ -1118,6 +1118,8 @@ const checkDelivery = async (crawlingContext) => {
           });
         }
         crawlee.log.info(`[배송지] 변경 완료`);
+        await page.reload({ waitUntil: "domcontentloaded" });
+        await page.waitForTimeout(1000);
         break;
       } catch (error) {
         crawlee.log.error(`[배송지] 변경 실패 (${index + 1}/3): ${error}`);
