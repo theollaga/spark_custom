@@ -2225,7 +2225,7 @@ class Shopify {
 
           // SEO handle 생성: 검색 키워드 + ASIN
           const seoHandle = (() => {
-            // 스토어 오픈 후 원복: if (data._existingHandle) return data._existingHandle;
+            if (data._existingHandle) return data._existingHandle; // 기존 상품 handle 유지 (upsert)
             const keyword = (tags && tags.length > 0) ? tags[0] : "";
             const slug = (keyword || safeTitle || "product")
               .toLowerCase()
@@ -2247,7 +2247,13 @@ class Shopify {
             category: shopifyTaxonomyId
               ? (shopifyTaxonomyId.startsWith("gid://") ? shopifyTaxonomyId : `gid://shopify/TaxonomyCategory/${shopifyTaxonomyId}`)
               : void 0,
-            tags: generatedTags,
+            tags: (() => {
+              if (data._existingTags && data._existingTags.length > 0) {
+                const mergedSet = new Set([...data._existingTags, ...generatedTags]);
+                return Array.from(mergedSet);
+              }
+              return generatedTags;
+            })(),
             status: "ACTIVE",
             descriptionHtml,
             seo: {
@@ -2473,6 +2479,7 @@ class Shopify {
             skippedExisting2++;
             e._existingProductId = existingProducts.get(asinLower).productId;
             e._existingHandle = existingProducts.get(asinLower).handle;
+            e._existingTags = existingProducts.get(asinLower).tags || [];
           }
           return true;
         });
@@ -3443,6 +3450,7 @@ class Shopify {
               nodes {
                 id
                 handle
+                tags
                 variants(first: 1) {
                   nodes {
                     sku
@@ -3467,6 +3475,7 @@ class Shopify {
             this.cachedExistingHandles.set(sku.toLowerCase(), {
               productId: product.id,
               handle: product.handle,
+              tags: product.tags || [],
             });
           }
         }
