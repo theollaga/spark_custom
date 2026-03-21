@@ -2291,12 +2291,22 @@ class Shopify {
             variants,
           };
 
+          const _altKeyword = (() => {
+            const firstTag = (tags && tags.length > 0) ? tags[0] : "";
+            const lastTag = (tags && tags.length > 1) ? tags[tags.length - 1] : "";
+            const knownBreadcrumbs = new Set(["automotive","appliances","arts crafts sewing","baby products","beauty personal care","cell phones accessories","clothing shoes jewelry","collectibles fine art","computers accessories","digital music","electronics","garden outdoor","grocery gourmet food","handmade products","health household","home kitchen","industrial scientific","kindle store","luggage","movies tv","musical instruments","office products","patio lawn garden","pet supplies","software","sports outdoors","tools home improvement","toys games","video games"]);
+            const isBreadcrumb = knownBreadcrumbs.has(firstTag.toLowerCase().trim());
+            return (!firstTag || isBreadcrumb) ? lastTag : firstTag;
+          })();
+          const altBase = brand ? `${brand} ${_altKeyword || category || ""}`.trim() : (_altKeyword || category || safeTitle || "Product");
           const fileInputs = (images || [])
-            .map((image) => {
+            .map((image, idx) => {
               const mainImgKeys = Object.keys(image.main || {});
               const lastMainImageUrl = mainImgKeys[mainImgKeys.length - 1];
+              const altText = idx === 0 ? altBase : `${altBase} ${idx + 1}`;
               return {
                 originalSource: lastMainImageUrl,
+                alt: altText.substring(0, 512),
               };
             })
             .filter((f) => f.originalSource);
