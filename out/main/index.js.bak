@@ -2200,7 +2200,7 @@ class Shopify {
                 ? pricing.compare_at_price.toString()
                 : undefined,
               sku: asin,
-              inventoryItem: { tracked: true, cost: price ? price.toString() : undefined },
+              inventoryItem: { tracked: true },
               inventoryQuantities:
                 locationId && typeof quantity === "number" && quantity >= 0
                   ? [{ locationId, name: "available", quantity }]
@@ -2211,17 +2211,8 @@ class Shopify {
             },
           ];
 
-          // 1순위: cleaned_all.csv 기반 매핑
           const matchedRule = this.chooseRule(category || "", tags || []);
-          let shopifyTaxonomyId = matchedRule?.taxonomyId
-            ? (matchedRule.taxonomyId.startsWith("gid://") ? matchedRule.taxonomyId : `gid://shopify/TaxonomyCategory/${matchedRule.taxonomyId}`)
-            : null;
-          // 2순위: txt 파일 기반 fallback
-          if (!shopifyTaxonomyId && category && category.trim()) {
-            try {
-              shopifyTaxonomyId = await this.findProductCategoryByName(category.trim(), tags || []);
-            } catch (e) { console.error("[category fallback error]", e); }
-          }
+          const shopifyTaxonomyId = matchedRule?.taxonomyId;
 
           const inputData = {
             handle: asin,
@@ -2229,35 +2220,11 @@ class Shopify {
             vendor: brand,
             productType: processedCategory,
             category: shopifyTaxonomyId
-              ? (shopifyTaxonomyId.startsWith("gid://") ? shopifyTaxonomyId : `gid://shopify/TaxonomyCategory/${shopifyTaxonomyId}`)
+              ? `gid://shopify/TaxonomyCategory/${shopifyTaxonomyId}`
               : void 0,
             tags: generatedTags,
             status: "ACTIVE",
             descriptionHtml,
-            seo: {
-              title: (() => {
-                if (!safeTitle) return undefined;
-                if (safeTitle.length <= 70) return safeTitle;
-                const cut = safeTitle.substring(0, 70).replace(/\s+\S*$/, "");
-                return cut || safeTitle.substring(0, 70);
-              })(),
-              description: (() => {
-                const bullets = (aboutThis || []).filter(b => b && b.trim().length > 0);
-                let desc = "";
-                if (brand && safeTitle) {
-                  desc = brand + " - " + safeTitle;
-                } else {
-                  desc = safeTitle || "";
-                }
-                if (bullets.length > 0) {
-                  desc += ". " + bullets[0].replace(/\[.*?\]/g, "").trim();
-                }
-                if (desc.length > 160) {
-                  desc = desc.substring(0, 160).replace(/\s+\S*$/, "") + "...";
-                }
-                return desc || undefined;
-              })(),
-            },
             metafields: [
               ...(url
                 ? [{ namespace: "amazon", key: "source_url", type: "url", value: url }]
@@ -2446,7 +2413,7 @@ class Shopify {
           const handle = e.asin.toLowerCase();
           if (existingHandles2.has(handle)) {
             skippedExisting2++;
-            // upsert: 기존 제품도 업데이트하기 위해 스킵하지 않음
+            return false;
           }
           return true;
         });
@@ -2540,7 +2507,7 @@ class Shopify {
       const handle = e.asin.toLowerCase();
       if (existingHandles.has(handle)) {
         skippedExisting++;
-        // upsert: 기존 제품도 업데이트하기 위해 스킵하지 않음
+        return false;
       }
       return true;
     });
@@ -4796,103 +4763,67 @@ class Shopify {
       return null;
     }
   }
-  // ===== Shopify txt 기반 카테고리 매칭 =====
-  _shopifyCategoryCache = null;
-  _categoryMatchCache = new Map();
-
-  _loadShopifyCategories() {
-    if (this._shopifyCategoryCache) return this._shopifyCategoryCache;
+  async findProductCategoryByName(categoryName) {
+    let category = "";
     try {
-      const fs = require("fs");
-      const path = require("path");
-      let filePath = path.join(process.resourcesPath || path.join(__dirname, ".."), "resources", "shopify_categories.txt");
-      if (!fs.existsSync(filePath)) {
-        filePath = path.join(__dirname, "..", "resources", "shopify_categories.txt");
+      const result = await getMatchCategory(categoryName);
+      log.info(`category result : ${result.data?.shopify_category}`);
+      log.info(`category result : ${JSON.stringify(result.data, null, 2)}`);
+      if (result.data) {
+        category = result.data.shopify_category;
+        log.info(`category match: ${category}`);
       }
-      const text = fs.readFileSync(filePath, "utf-8");
-      const categories = [];
-      for (const line of text.split("\n")) {
-        const m = line.match(/^(gid:\/\/shopify\/TaxonomyCategory\/[^\s]+)\s+:\s+(.+)$/);
-        if (m) {
-          const id = m[1].trim();
-          const fullName = m[2].trim();
-          const parts = fullName.split(" > ");
-          const name = parts[parts.length - 1];
-          const words = fullName.toLowerCase().replace(/[&,\-]/g, " ").split(/\s+/).filter(w => w.length > 2);
-          const nameWords = name.toLowerCase().replace(/[&,\-]/g, " ").split(/\s+/).filter(w => w.length > 2);
-          categories.push({ id, fullName, name, parts, words: new Set(words), nameWords: new Set(nameWords), depth: parts.length });
+    } catch (error) {}
+    log.info(`category name : ${category}`);
+    if (category === "") {
+      return null;
+    }
+    try {
+      const searchQuery = `#graphql
+        query getTaxonomy($search: String!) {
+          taxonomy {
+            categories(first: 250, search: $search) {
+              nodes {
+                id
+                name
+                fullName
+              }
+            }
+          }
         }
+      `;
+      const { errors, data } = await this.client.request(searchQuery, {
+        variables: { search: category },
+      });
+      if (!errors && data?.taxonomy?.categories?.nodes) {
+        const categories = data.taxonomy.categories.nodes;
+        const fullNameMatch = categories.find(
+          (cat) => cat.fullName?.toLowerCase() === category.toLowerCase(),
+        );
+        if (fullNameMatch) {
+          log.info(
+            `Found exact fullName match: ${fullNameMatch.fullName} (${fullNameMatch.id})`,
+          );
+          return fullNameMatch.id;
+        }
+        const nameMatch = categories.find(
+          (cat) => cat.name.toLowerCase() === category.toLowerCase(),
+        );
+        if (nameMatch) {
+          log.info(
+            `Found exact name match: ${nameMatch.name} (${nameMatch.id})`,
+          );
+          return nameMatch.id;
+        }
+        log.warn(`No exact match found for category: ${category}`);
       }
-      log.info("[CategoryTxt] Loaded " + categories.length + " Shopify categories");
-      this._shopifyCategoryCache = categories;
-      return categories;
+      return null;
     } catch (error) {
-      log.error("[CategoryTxt] Failed to load:", error);
-      return [];
+      log.error("Error searching product categories:", error);
+      return null;
     }
   }
-
-  _scoreCategory(shopifyCat, amazonTags) {
-    let score = 0;
-    const shopifyParts = shopifyCat.parts.map(p => p.toLowerCase().trim());
-    const amazonParts = amazonTags.map(t => t.toLowerCase().replace(/[\-]/g, " ").trim());
-    // 1. Shopify 경로의 각 레벨이 Amazon 경로에 포함되면 높은 점수
-    for (const sp of shopifyParts) {
-      for (const ap of amazonParts) {
-        if (sp === ap) { score += 10; break; }
-        // 부분 포함 (예: "kitchen & dining" contains "kitchen")
-        const spWords = sp.replace(/[&,]/g, " ").split(/\s+/).filter(w => w.length > 2);
-        const apWords = ap.replace(/[&,]/g, " ").split(/\s+/).filter(w => w.length > 2);
-        let wordMatches = 0;
-        for (const sw of spWords) {
-          if (apWords.includes(sw)) wordMatches++;
-        }
-        if (spWords.length > 0 && wordMatches > 0) {
-          score += (wordMatches / spWords.length) * 5;
-        }
-      }
-    }
-    // 2. Shopify 마지막 카테고리명과 Amazon 마지막 태그(가장 구체적) 비교 보너스
-    const lastAmazon = amazonParts[amazonParts.length - 1] || "";
-    const lastShopify = shopifyParts[shopifyParts.length - 1] || "";
-    const lastAWords = lastAmazon.replace(/[&,]/g, " ").split(/\s+/).filter(w => w.length > 2);
-    const lastSWords = lastShopify.replace(/[&,]/g, " ").split(/\s+/).filter(w => w.length > 2);
-    for (const w of lastAWords) {
-      if (lastSWords.includes(w)) score += 8;
-    }
-    // 3. 깊이 보너스 (더 구체적인 카테고리 선호)
-    score += shopifyCat.depth * 0.3;
-    return score;
-  }
-
-  async findProductCategoryByName(categoryName, tags) {
-    const cacheKey = tags && tags.length > 0 ? tags.join("|") : categoryName;
-    if (this._categoryMatchCache.has(cacheKey)) {
-      return this._categoryMatchCache.get(cacheKey);
-    }
-    const categories = this._loadShopifyCategories();
-    if (categories.length === 0) return null;
-    const searchTags = tags && tags.length > 0 ? tags.filter(t => t && t.trim().length > 2) : [categoryName];
-    let bestMatch = null;
-    let bestScore = 0;
-    for (const cat of categories) {
-      const score = this._scoreCategory(cat, searchTags);
-      if (score > bestScore) {
-        bestScore = score;
-        bestMatch = cat;
-      }
-    }
-    const minScore = 3;
-    if (bestMatch && bestScore >= minScore) {
-      log.info("[CategoryTxt] " + searchTags.join(" > ") + " => " + bestMatch.fullName + " (" + bestMatch.id + ") [score: " + bestScore + "]");
-      this._categoryMatchCache.set(cacheKey, bestMatch.id);
-      return bestMatch.id;
-    }
-    log.warn("[CategoryTxt] No good match for: " + searchTags.join(" > ") + " (best: " + bestScore + ")");
-    this._categoryMatchCache.set(cacheKey, null);
-    return null;
-  }
-async findOriginalProductDataByAsin(asin) {
+  async findOriginalProductDataByAsin(asin) {
     try {
       const dsStorage = await Crawler.DataSetOpen(this.storageId);
       const allData = await dsStorage.getData({ offset: 0, limit: 1e4 });
