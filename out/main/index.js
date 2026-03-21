@@ -1,4 +1,4 @@
-"use strict";
+﻿"use strict";
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -2223,8 +2223,24 @@ class Shopify {
             } catch (e) { console.error("[category fallback error]", e); }
           }
 
+          // SEO handle 생성: 검색 키워드 + ASIN
+          const seoHandle = (() => {
+            if (data._existingHandle) return data._existingHandle; // 기존 상품은 handle 유지
+            const keyword = (tags && tags.length > 0) ? tags[0] : "";
+            const slug = (keyword || safeTitle || "product")
+              .toLowerCase()
+              .replace(/[^a-z0-9\s-]/g, "")
+              .replace(/\s+/g, "-")
+              .replace(/-+/g, "-")
+              .replace(/^-|-$/g, "")
+              .substring(0, 60)
+              .replace(/-$/, "");
+            return slug ? `${slug}-${asin.toLowerCase()}` : asin.toLowerCase();
+          })();
+
           const inputData = {
-            handle: asin,
+            ...(data._existingProductId ? { id: data._existingProductId } : {}),
+            handle: seoHandle,
             title: safeTitle,
             vendor: brand,
             productType: processedCategory,
@@ -2436,17 +2452,17 @@ class Shopify {
         stats,
         deselected: deselected2,
       } = this.sharedPreparedData;
-      const existingHandles2 =
-        this.cachedExistingHandles || /* @__PURE__ */ new Set();
+      const existingProducts = this.cachedExistingHandles || new Map();
       let skippedExisting2 = 0;
       const filteredBatches = [];
       let totalFiltered = 0;
       for (const batchData of batches) {
         const filteredBatch = batchData.batch.filter((e) => {
-          const handle = e.asin.toLowerCase();
-          if (existingHandles2.has(handle)) {
+          const asinLower = e.asin.toLowerCase();
+          if (existingProducts.has(asinLower)) {
             skippedExisting2++;
-            // upsert: 기존 제품도 업데이트하기 위해 스킵하지 않음
+            e._existingProductId = existingProducts.get(asinLower).productId;
+            e._existingHandle = existingProducts.get(asinLower).handle;
           }
           return true;
         });
@@ -2533,14 +2549,14 @@ class Shopify {
       seenAsins.add(e.asin);
       return true;
     });
-    const existingHandles =
-      this.cachedExistingHandles || /* @__PURE__ */ new Set();
+    const existingProducts = this.cachedExistingHandles || new Map();
     let skippedExisting = 0;
     const newData = uniqueData.filter((e) => {
-      const handle = e.asin.toLowerCase();
-      if (existingHandles.has(handle)) {
+      const asinLower = e.asin.toLowerCase();
+      if (existingProducts.has(asinLower)) {
         skippedExisting++;
-        // upsert: 기존 제품도 업데이트하기 위해 스킵하지 않음
+        e._existingProductId = existingProducts.get(asinLower).productId;
+        e._existingHandle = existingProducts.get(asinLower).handle;
       }
       return true;
     });
@@ -3399,22 +3415,29 @@ class Shopify {
    */
   async loadExistingHandles() {
     try {
-      log.info("[DuplicateCheck] Loading existing Shopify handles...");
+      log.info("[DuplicateCheck] Loading existing Shopify products by SKU...");
       const startTime = Date.now();
-      this.cachedExistingHandles = /* @__PURE__ */ new Set();
+      // Map<asin(lowercase), { productId, handle }>
+      this.cachedExistingHandles = new Map();
       let hasNextPage = true;
       let cursor = null;
       let totalLoaded = 0;
       while (hasNextPage) {
         const query = `#graphql
-          query getProductHandles($cursor: String) {
+          query getProductSKUs($cursor: String) {
             products(first: 250, after: $cursor) {
               pageInfo {
                 hasNextPage
                 endCursor
               }
               nodes {
+                id
                 handle
+                variants(first: 1) {
+                  nodes {
+                    sku
+                  }
+                }
               }
             }
           }
@@ -3423,35 +3446,36 @@ class Shopify {
           variables: { cursor },
         });
         if (errors) {
-          log.error("[DuplicateCheck] Handle query error:", errors);
+          log.error("[DuplicateCheck] SKU query error:", errors);
           break;
         }
         const products = data?.products;
         if (!products) break;
-        for (const product2 of products.nodes) {
-          if (product2.handle) {
-            this.cachedExistingHandles.add(product2.handle.toLowerCase());
+        for (const product of products.nodes) {
+          const sku = product.variants?.nodes?.[0]?.sku;
+          if (sku) {
+            this.cachedExistingHandles.set(sku.toLowerCase(), {
+              productId: product.id,
+              handle: product.handle,
+            });
           }
         }
         totalLoaded += products.nodes.length;
         hasNextPage = products.pageInfo.hasNextPage;
         cursor = products.pageInfo.endCursor;
-        if (totalLoaded % 1e3 === 0) {
+        if (totalLoaded % 1000 === 0) {
           log.info(`[DuplicateCheck] ${totalLoaded} loaded...`);
         }
       }
-      const elapsed = ((Date.now() - startTime) / 1e3).toFixed(1);
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
       log.info(
-        `[DuplicateCheck] Done: ${this.cachedExistingHandles.size} existing (${elapsed}s)`,
+        `[DuplicateCheck] Done: ${this.cachedExistingHandles.size} existing products by SKU (${elapsed}s)`
       );
     } catch (error) {
-      log.error("[DuplicateCheck] Failed to load handles:", error);
-      this.cachedExistingHandles = /* @__PURE__ */ new Set();
+      log.error("[DuplicateCheck] Failed to load SKUs:", error);
+      this.cachedExistingHandles = new Map();
     }
   }
-  /**
-   * 기존 Handle 캐시 반환 (외부에서 접근용)
-   */
   getExistingHandles() {
     return this.cachedExistingHandles || /* @__PURE__ */ new Set();
   }
