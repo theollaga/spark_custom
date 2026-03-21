@@ -2225,7 +2225,7 @@ class Shopify {
 
           // SEO handle 생성: 검색 키워드 + ASIN
           const seoHandle = (() => {
-            if (data._existingHandle) return data._existingHandle; // 기존 상품은 handle 유지
+            // 스토어 오픈 후 원복: if (data._existingHandle) return data._existingHandle;
             const keyword = (tags && tags.length > 0) ? tags[0] : "";
             const slug = (keyword || safeTitle || "product")
               .toLowerCase()
