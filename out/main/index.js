@@ -2284,10 +2284,10 @@ class Shopify {
               ...(url
                 ? [{ namespace: "amazon", key: "source_url", type: "url", value: url }]
                 : []),
-              { namespace: "amazon", key: "asin", type: "single_line_text_field", value: asin || "" },
+              { namespace: "amazon", key: "asin", type: "single_line_text_field", value: asin || "N/A" },
               { namespace: "amazon", key: "original_price", type: "number_decimal", value: String(price || 0) },
-              { namespace: "amazon", key: "seller", type: "single_line_text_field", value: seller || "" },
-              { namespace: "amazon", key: "fulfilled_by", type: "single_line_text_field", value: fulfilled_by || "" },
+              { namespace: "amazon", key: "seller", type: "single_line_text_field", value: seller || "Unknown" },
+              { namespace: "amazon", key: "fulfilled_by", type: "single_line_text_field", value: fulfilled_by || "Unknown" },
               { namespace: "amazon", key: "rating", type: "number_decimal", value: String(rating || 0) },
               { namespace: "amazon", key: "reviews_count", type: "number_integer", value: String(reviews_count || 0) },
               { namespace: "amazon", key: "margin_percent", type: "number_integer", value: String(pricing.margin_percent) },
