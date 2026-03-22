@@ -2225,7 +2225,7 @@ class Shopify {
 
           // SEO handle 생성: 검색 키워드 + ASIN
           const seoHandle = (() => {
-            if (data._existingHandle) return data._existingHandle; // 기존 상품 handle 유지 (upsert)
+            // 스토어 오픈 후 원복: if (data._existingHandle) return data._existingHandle;
             const keyword = (tags && tags.length > 0) ? tags[0] : "";
             const slug = (keyword || safeTitle || "product")
               .toLowerCase()
@@ -2242,7 +2242,7 @@ class Shopify {
             ...(data._existingProductId ? { id: data._existingProductId } : {}),
             handle: seoHandle,
             title: safeTitle,
-            vendor: brand,
+            vendor: brand || "Unbranded",
             productType: processedCategory,
             category: shopifyTaxonomyId
               ? (shopifyTaxonomyId.startsWith("gid://") ? shopifyTaxonomyId : `gid://shopify/TaxonomyCategory/${shopifyTaxonomyId}`)
@@ -2686,201 +2686,186 @@ class Shopify {
       let totalSuccess = 0;
       let totalFailed = 0;
       const failedBatches = [];
-      for await (const {
-        batch: uploadData,
-        batchNum,
-        totalBatches,
-        processedSoFar,
-        total,
-      } of prepareData) {
+      // === 파이프라인 배치 업로드 (v0.5.0) ===
+      // 다음 배치를 미리 준비하여 대기 시간 최소화
+      const allBatches = [];
+      for await (const batchData of prepareData) {
+        allBatches.push(batchData);
+      }
+      log.info(`[Pipeline] ${allBatches.length}개 배치 수집 완료 (총 ${allBatches.reduce((s, b) => s + b.batch.length, 0)}개 상품)`);
+      
+      // 배치 사전 준비 함수
+      const prepareBatch = async (batchInfo) => {
+        const { batch: uploadData, batchNum, totalBatches } = batchInfo;
         try {
-          if (this.dailyLimitReached) {
-            log.warn(
-              `[Batch ${batchNum}/${totalBatches}] 일일 제한으로 스킵 (${uploadData.length}개)`,
-            );
-            this.dailyLimitSkipped += uploadData.length;
-            totalFailed += uploadData.length;
-            continue;
-          }
-          const prevProcessed = processedSoFar - uploadData.length;
-          if (this.onProgress) {
-            this.onProgress({
-              batchNum,
-              totalBatches,
-              processed: prevProcessed,
-              total,
-              percent: Math.round((prevProcessed / total) * 100),
-              status: "starting",
-            });
-          }
           await this.ensureValidToken();
-          const runningOpBefore = await this.getRunningBulkOperation();
-          if (
-            runningOpBefore &&
-            (runningOpBefore.status === BulkOperationStatus.Running ||
-              runningOpBefore.status === BulkOperationStatus.Created)
-          ) {
-            log.warn(
-              `[Batch ${batchNum}] 이전 Bulk Operation 진행 중 (${runningOpBefore.id}) - 완료 대기...`,
-            );
-            await this.pollingCurrentBulkOperation(runningOpBefore.id);
-            log.info(`[Batch ${batchNum}] 이전 Bulk Operation 완료, 배치 시작`);
-          }
           const stagedTarget = await this.stagedUploadsCreate();
           const uploadUrl = stagedTarget.url;
           const parameters = stagedTarget.parameters;
           const fileKey = parameters.find((e) => e.name == "key")?.value;
-          const formData = new FormData$1();
-          parameters.forEach((param) => {
-            formData.append(param.name, param.value);
-          });
           const { jsonl: productsJSONL, failed: convertFailedProducts } =
             await this.convertData(publications, uploadData, locationId);
           if (convertFailedProducts.length > 0) {
-            log.warn(
-              `[Batch ${batchNum}] ${convertFailedProducts.length}개 상품 변환 실패 (스킵됨)`,
-            );
+            log.warn(`[Batch ${batchNum}] ${convertFailedProducts.length}개 상품 변환 실패 (스킵됨)`);
             convertFailedProducts.forEach(({ asin, error }) => {
               log.warn(`  - ${asin}: ${error}`);
             });
           }
-          if (!productsJSONL || productsJSONL.trim().length === 0) {
-            log.warn(`[Batch ${batchNum}] 모든 상품 변환 실패 - 배치 스킵`);
+          return { uploadUrl, parameters, fileKey, productsJSONL, convertFailedProducts };
+        } catch (err) {
+          log.error(`[Batch ${batchNum}] 사전 준비 실패: ${err.message}`);
+          return null;
+        }
+      };
+
+      // 배치 업로드 실행 함수
+      const executeBatchUpload = async (prepared, batchInfo) => {
+        const { uploadUrl, parameters, fileKey, productsJSONL } = prepared;
+        const { batchNum } = batchInfo;
+        if (!productsJSONL || productsJSONL.trim().length === 0) {
+          log.warn(`[Batch ${batchNum}] 모든 상품 변환 실패 - 배치 스킵`);
+          return null;
+        }
+        const jsonlBuffer = Buffer.from(productsJSONL, "utf-8");
+        const MAX_RETRIES = 3;
+        const RETRY_DELAY_MS = 6e4;
+        let lastError = null;
+        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+          try {
+            const formData = new FormData$1();
+            parameters.forEach((param) => { formData.append(param.name, param.value); });
+            formData.append("file", stream.Readable.from(Buffer.from(productsJSONL, "utf-8")), {
+              filename: "products.jsonl", contentType: "text/jsonl", knownLength: jsonlBuffer.length,
+            });
+            const fetchResponse = await fetch$1(uploadUrl, { method: "POST", body: formData });
+            if (fetchResponse.ok) {
+              log.info(`[Batch ${batchNum}] S3 업로드 성공`);
+              const bulkResult = await this.bulkOperationRunMutation(fileKey);
+              return bulkResult.id;
+            } else {
+              throw new Error(`HTTP ${fetchResponse.status}: ${fetchResponse.statusText}`);
+            }
+          } catch (error) {
+            lastError = error instanceof Error ? error : new Error(String(error));
+            const isNetworkError = lastError.message.includes("socket hang up") ||
+              lastError.message.includes("ECONNRESET") || lastError.message.includes("ETIMEDOUT") ||
+              lastError.message.includes("TLS") || lastError.message.includes("fetch failed") ||
+              lastError.message.includes("ENOTFOUND") || lastError.message.includes("ECONNREFUSED");
+            if (attempt < MAX_RETRIES && isNetworkError) {
+              log.warn(`[Batch ${batchNum}] S3 업로드 실패 (${attempt}/${MAX_RETRIES}): ${lastError.message}`);
+              log.warn(`[Batch ${batchNum}] ${RETRY_DELAY_MS / 1e3}초 후 재시도...`);
+              await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS));
+            } else {
+              throw lastError;
+            }
+          }
+        }
+        return null;
+      };
+
+      // === 메인 파이프라인 루프 ===
+      let nextPrepared = null;
+      let currentPollingPromise = null;
+
+      for (let i = 0; i < allBatches.length; i++) {
+        const batchInfo = allBatches[i];
+        const { batch: uploadData, batchNum, totalBatches, processedSoFar, total } = batchInfo;
+
+        try {
+          if (this.dailyLimitReached) {
+            log.warn(`[Batch ${batchNum}/${totalBatches}] 일일 제한으로 스킵 (${uploadData.length}개)`);
+            this.dailyLimitSkipped += uploadData.length;
+            totalFailed += uploadData.length;
             continue;
           }
-          const jsonlBuffer = Buffer.from(productsJSONL, "utf-8");
-          formData.append("file", stream.Readable.from(jsonlBuffer), {
-            filename: "products.jsonl",
-            contentType: "text/jsonl",
-            knownLength: jsonlBuffer.length,
-            // Content-Length 명시 (S3 호환성)
-          });
-          const MAX_RETRIES = 3;
-          const RETRY_DELAY_MS = 6e4;
-          let uploadSuccess = false;
-          let lastError = null;
-          for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-            try {
-              let currentFormData;
-              if (attempt > 1) {
-                currentFormData = new FormData$1();
-                parameters.forEach((param) => {
-                  currentFormData.append(param.name, param.value);
-                });
-                currentFormData.append(
-                  "file",
-                  stream.Readable.from(Buffer.from(productsJSONL, "utf-8")),
-                  {
-                    filename: "products.jsonl",
-                    contentType: "text/jsonl",
-                    knownLength: jsonlBuffer.length,
-                  },
-                );
-              } else {
-                currentFormData = formData;
-              }
-              const fetchResponse = await fetch$1(uploadUrl, {
-                method: "POST",
-                body: currentFormData,
-              });
-              if (fetchResponse.ok) {
-                uploadSuccess = true;
-                break;
-              } else {
-                throw new Error(
-                  `HTTP ${fetchResponse.status}: ${fetchResponse.statusText}`,
-                );
-              }
-            } catch (error) {
-              lastError =
-                error instanceof Error ? error : new Error(String(error));
-              const isNetworkError =
-                lastError.message.includes("socket hang up") ||
-                lastError.message.includes("ECONNRESET") ||
-                lastError.message.includes("ETIMEDOUT") ||
-                lastError.message.includes("TLS") ||
-                lastError.message.includes("fetch failed") ||
-                lastError.message.includes("ENOTFOUND") ||
-                lastError.message.includes("ECONNREFUSED");
-              if (attempt < MAX_RETRIES && isNetworkError) {
-                log.warn(
-                  `[Batch ${batchNum}] S3 업로드 실패 (${attempt}/${MAX_RETRIES}): ${lastError.message}`,
-                );
-                log.warn(
-                  `[Batch ${batchNum}] ${RETRY_DELAY_MS / 1e3}초 후 재시도...`,
-                );
-                await new Promise((resolve) =>
-                  setTimeout(resolve, RETRY_DELAY_MS),
-                );
-              } else if (attempt >= MAX_RETRIES) {
-                log.error(
-                  `[Batch ${batchNum}] S3 업로드 최종 실패: ${lastError.message}`,
-                );
-                throw lastError;
-              } else {
-                throw lastError;
-              }
-            }
+
+          const prevProcessed = processedSoFar - uploadData.length;
+          if (this.onProgress) {
+            this.onProgress({ batchNum, totalBatches, processed: prevProcessed, total,
+              percent: Math.round((prevProcessed / total) * 100), status: "starting" });
           }
-          if (uploadSuccess) {
-            log.info("Starting bulk operation (productSet)...");
-            const bulkOperationRunMutationResult =
-              await this.bulkOperationRunMutation(fileKey);
-            const bulkOperationId = bulkOperationRunMutationResult.id;
-            log.info(`Bulk operation ID: ${bulkOperationId}`);
-            log.info(
-              "Waiting for bulk operation to complete (includes price/inventory)...",
-            );
-            await this.pollingCurrentBulkOperation(
-              bulkOperationId,
-              publications,
-            );
+
+          // 이전 배치 폴링 완료 대기
+          if (currentPollingPromise) {
+            log.info(`[Batch ${batchNum}] 이전 배치 완료 대기 중...`);
+            await currentPollingPromise;
+            currentPollingPromise = null;
+          }
+
+          // 사전 준비된 데이터 사용 또는 새로 준비
+          let prepared = nextPrepared;
+          nextPrepared = null;
+          if (!prepared) {
+            prepared = await prepareBatch(batchInfo);
+          }
+          if (!prepared) {
+            log.error(`[Batch ${batchNum}] 준비 실패 - 스킵`);
+            totalFailed += uploadData.length;
+            failedBatches.push({ batchNum, error: "준비 실패" });
+            continue;
+          }
+
+          // 이전 bulk operation 확인
+          const runningOpBefore = await this.getRunningBulkOperation();
+          if (runningOpBefore && (runningOpBefore.status === "RUNNING" || runningOpBefore.status === "CREATED")) {
+            log.warn(`[Batch ${batchNum}] 이전 Bulk Operation 진행 중 - 완료 대기...`);
+            await this.pollingCurrentBulkOperation(runningOpBefore.id);
+          }
+
+          // 현재 배치 업로드 실행
+          const bulkOperationId = await executeBatchUpload(prepared, batchInfo);
+          if (!bulkOperationId) {
+            log.warn(`[Batch ${batchNum}] 업로드 스킵`);
+            continue;
+          }
+
+          log.info(`[Batch ${batchNum}] Bulk operation started: ${bulkOperationId}`);
+
+          // 다음 배치가 있으면 폴링과 동시에 미리 준비
+          if (i + 1 < allBatches.length && !this.dailyLimitReached) {
+            const nextBatchInfo = allBatches[i + 1];
+            log.info(`[Pipeline] 배치 ${batchNum} 폴링 + 배치 ${i + 2} 사전 준비 동시 진행`);
+
+            const [pollingResult] = await Promise.all([
+              this.pollingCurrentBulkOperation(bulkOperationId, publications).then(() => {
+                totalSuccess += this.lastBatchSuccess;
+                totalFailed += this.lastBatchFailed;
+                return "polling_done";
+              }),
+              prepareBatch(nextBatchInfo).then((result) => {
+                nextPrepared = result;
+                log.info(`[Pipeline] 배치 ${i + 2} 사전 준비 완료`);
+                return "prepare_done";
+              }),
+            ]);
+          } else {
+            // 마지막 배치: 폴링만
+            await this.pollingCurrentBulkOperation(bulkOperationId, publications);
             totalSuccess += this.lastBatchSuccess;
             totalFailed += this.lastBatchFailed;
-            if (this.dailyLimitReached && this.lastBatchFailed > 0) {
-              log.warn(
-                `⚠️ Batch ${batchNum}/${totalBatches} 일일 제한 도달 (성공: ${this.lastBatchSuccess}, 실패: ${this.lastBatchFailed})`,
-              );
-            } else if (this.lastBatchFailed > 0) {
-              log.warn(
-                `⚠️ Batch ${batchNum}/${totalBatches} 부분 실패 (성공: ${this.lastBatchSuccess}, 실패: ${this.lastBatchFailed})`,
-              );
-            } else {
-              log.info(
-                `✅ Batch ${batchNum}/${totalBatches} completed successfully! (${processedSoFar}/${total})`,
-              );
-            }
-            if (this.onProgress) {
-              this.onProgress({
-                batchNum,
-                totalBatches,
-                processed: processedSoFar,
-                total,
-                percent: Math.round((processedSoFar / total) * 100),
-                status: "completed",
-              });
-            }
-          } else {
-            throw new Error("jsonl upload error");
           }
+
+          if (this.dailyLimitReached && this.lastBatchFailed > 0) {
+            log.warn(`⚠️ Batch ${batchNum}/${totalBatches} 일일 제한 도달 (성공: ${this.lastBatchSuccess}, 실패: ${this.lastBatchFailed})`);
+          } else if (this.lastBatchFailed > 0) {
+            log.warn(`⚠️ Batch ${batchNum}/${totalBatches} 부분 실패 (성공: ${this.lastBatchSuccess}, 실패: ${this.lastBatchFailed})`);
+          } else {
+            log.info(`✅ Batch ${batchNum}/${totalBatches} completed successfully! (${processedSoFar}/${total})`);
+          }
+
+          if (this.onProgress) {
+            this.onProgress({ batchNum, totalBatches, processed: processedSoFar, total,
+              percent: Math.round((processedSoFar / total) * 100), status: "completed" });
+          }
+
         } catch (batchError) {
-          const errorMessage =
-            batchError instanceof Error
-              ? batchError.message
-              : String(batchError);
+          const errorMessage = batchError instanceof Error ? batchError.message : String(batchError);
           log.error(`❌ Batch ${batchNum} failed: ${errorMessage}`);
           failedBatches.push({ batchNum, error: errorMessage });
           totalFailed += uploadData.length;
           if (this.onProgress) {
-            this.onProgress({
-              batchNum,
-              totalBatches,
-              processed: processedSoFar,
-              total,
-              percent: Math.round((processedSoFar / total) * 100),
-              status: "failed",
-              error: errorMessage,
-            });
+            this.onProgress({ batchNum, totalBatches, processed: processedSoFar, total,
+              percent: Math.round((processedSoFar / total) * 100), status: "failed", error: errorMessage });
           }
           continue;
         }
