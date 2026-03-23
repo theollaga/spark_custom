@@ -57,6 +57,90 @@ const supabaseJs = require("@supabase/supabase-js");
 const { generateAllTags } = require("./tag_engine");
 const { calculatePrice } = require("./price_engine");
 const icon = path.join(__dirname, "../../resources/icon.png");
+// === 수집 완료 후 자동 정리 (검색어 매칭 필터) ===
+async function cleanupCollectedData(storageId) {
+  try {
+    const _path = require("path");
+    const _fs = require("fs");
+    const _electron = require("electron");
+    const dsPath = _path.join(_electron.app.getPath("userData"), "storage", "datasets", storageId);
+    if (!_fs.existsSync(dsPath)) return;
+    const files = _fs.readdirSync(dsPath).filter(f => f.endsWith(".json"));
+    if (files.length === 0) return;
+
+    // 1단계: 전체 상품 로드 및 BSR 최상위 카테고리 집계
+    const items = [];
+    const bsrCatCount = {};
+    for (const file of files) {
+      try {
+        const filePath = _path.join(dsPath, file);
+        const data = JSON.parse(_fs.readFileSync(filePath, "utf-8"));
+        const bsrTop = (data.bsr_ranks && data.bsr_ranks.length > 0) ? data.bsr_ranks[0].category : null;
+        const breadcrumbTop = (data.tags && data.tags.length >= 2) ? data.tags[1] : "";
+        items.push({ file, filePath, data, bsrTop, breadcrumbTop });
+        if (bsrTop) {
+          bsrCatCount[bsrTop] = (bsrCatCount[bsrTop] || 0) + 1;
+        }
+      } catch (e) { /* skip */ }
+    }
+
+    // 2단계: BSR 주 카테고리 판별
+    let mainBsrCategory = "";
+    let mainBsrCount = 0;
+    for (const [cat, count] of Object.entries(bsrCatCount)) {
+      if (count > mainBsrCount) { mainBsrCount = count; mainBsrCategory = cat; }
+    }
+    const bsrTotal = Object.values(bsrCatCount).reduce((a, b) => a + b, 0);
+    const mainBsrRatio = bsrTotal > 0 ? mainBsrCount / bsrTotal : 0;
+
+    crawlerLog.info(`[자동정리] BSR 주 카테고리: "${mainBsrCategory}" (${Math.round(mainBsrRatio * 100)}%, ${mainBsrCount}/${bsrTotal})`);
+
+    // 주 카테고리 비율이 60% 미만이면 필터링 안 함 (카테고리가 너무 분산됨)
+    if (mainBsrRatio < 0.6) {
+      crawlerLog.info(`[자동정리] BSR 주 카테고리 비율 ${Math.round(mainBsrRatio * 100)}% < 60% - 필터링 안 함`);
+      crawlerLog.info(`[자동정리] ${items.length}개 전부 유지`);
+      return;
+    }
+
+    // 3단계: 필터링
+    let removed = 0;
+    const removedItems = [];
+    const searchKw = (items[0]?.data?.tags?.[0] || "").toLowerCase();
+    const kwWords = searchKw.split(/\s+/).filter(w => w.length >= 4);
+
+    for (const item of items) {
+      // BSR 있는 경우: 주 카테고리와 비교
+      if (item.bsrTop) {
+        if (item.bsrTop === mainBsrCategory) continue; // 일치 → 유지
+
+        // BSR 불일치 → 2차 검증: 키워드 67% 이상이면 유지
+        if (kwWords.length > 0) {
+          const title = (item.data.title || "").toLowerCase();
+          const matchCount = kwWords.filter(w => title.includes(w)).length;
+          const matchRatio = matchCount / kwWords.length;
+          if (matchRatio >= 0.67) continue; // 키워드 매칭 OK → 유지
+        }
+
+        // BSR 불일치 + 키워드 부족 → 제거
+        _fs.unlinkSync(item.filePath);
+        removed++;
+        removedItems.push(`[${item.data.asin}] [BSR:${item.bsrTop}] ${(item.data.title || "").substring(0, 50)}`);
+        continue;
+      }
+
+      // BSR 없는 경우: 무조건 유지 (BSR 데이터 부족으로 판단 불가)
+      // breadcrumb이 있으면 참고 로그만 출력
+    }
+
+    if (removed > 0) {
+      crawlerLog.info(`[자동정리] ${items.length}개 중 ${removed}개 제거 (BSR 카테고리 불일치)`);
+      removedItems.forEach(item => crawlerLog.info(`[자동정리] 제거: ${item}`));
+      crawlerLog.info(`[자동정리] 최종 ${items.length - removed}개 유지`);
+    } else {
+      crawlerLog.info(`[자동정리] ${items.length}개 전부 유지 (제거 대상 없음)`);
+    }
+  } catch (e) { /* ignore */ }
+}
 var LABEL = /* @__PURE__ */ ((LABEL2) => {
   LABEL2["INIT"] = "INIT";
   LABEL2["AMAZON_PRODUCT_LIST"] = "AMAZON_PRODUCT_LIST";
@@ -86,12 +170,12 @@ const addProductListRouter = (router2) => {
       });
       await Crawler.checkAborted();
       const productItemLinkSelector =
-        '[data-component-type="s-search-result"]:not(.AdHolder) .s-product-image-container a';
+        '.s-main-slot > [data-component-type="s-search-result"]:not(.AdHolder) .s-product-image-container a';
       await page.waitForSelector(productItemLinkSelector, {
         timeout: 3e4,
       });
       const products = await page
-        .locator('[data-component-type="s-search-result"]:not(.AdHolder)')
+        .locator('.s-main-slot > [data-component-type="s-search-result"]:not(.AdHolder)')
         .all();
       let primeProductLinks = [];
       await Crawler.checkAborted();
@@ -102,13 +186,18 @@ const addProductListRouter = (router2) => {
               .locator('[role="img"][aria-label="Amazon Prime"]')
               .count()) > 0
           ) {
-            const link =
-              (await product
-                .locator(".s-product-image-container a")
-                .getAttribute("href")) || "";
-            primeProductLinks.push(link);
+            const dataIndex = await product.getAttribute("data-index");
+            if (dataIndex !== null) {
+              const link =
+                (await product
+                  .locator(".s-product-image-container a")
+                  .getAttribute("href")) || "";
+              primeProductLinks.push(link);
+            }
           }
         } else {
+          const dataIndex = await product.getAttribute("data-index");
+          if (dataIndex === null) continue; // 추천/편집 블록 상품 스킵
           const link =
             (await product
               .locator(".s-product-image-container a")
@@ -181,10 +270,19 @@ const addASINRouter = (router2) => {
         });
         let asinLinkList;
         if (twisterData) {
-          const asinMap = Object.keys(twisterData.dimensionValuesDisplayData);
-          asinLinkList = asinMap.map(
-            (asin) => `https://www.amazon.com/dp/${asin}?psc=1&trnd=${asin}`,
-          );
+          // 변형 상품이 다른 카테고리 제품을 포함할 수 있으므로, 현재 페이지 ASIN만 수집
+          const currentAsinLoc = page.locator("input#ASIN");
+          const currentAsin = (await currentAsinLoc.count()) > 0
+            ? await currentAsinLoc.first().getAttribute("value")
+            : null;
+          if (currentAsin) {
+            asinLinkList = [`https://www.amazon.com/dp/${currentAsin}?psc=1&trnd=${currentAsin}`];
+          } else {
+            const asinMap = Object.keys(twisterData.dimensionValuesDisplayData);
+            asinLinkList = asinMap.map(
+              (asin) => `https://www.amazon.com/dp/${asin}?psc=1&trnd=${asin}`,
+            );
+          }
         } else {
           const asinLoc = page.locator("input#ASIN");
           if ((await asinLoc.count()) == 0) throw new Error("input#ASIN Error");
@@ -1477,6 +1575,7 @@ const crawlerIPC = () => {
                 `[크롤링] === 완료 === 처리: ${stats.requestsFinished}개, 실패: ${stats.requestsFailed}개`,
               );
             }
+            await cleanupCollectedData(Crawler.storageId);
             sendToRenderer("crawler:complete", Crawler.stopReason);
           })
           .catch((error) => {
@@ -2225,7 +2324,7 @@ class Shopify {
 
           // SEO handle 생성: 검색 키워드 + ASIN
           const seoHandle = (() => {
-            // 스토어 오픈 후 원복: if (data._existingHandle) return data._existingHandle;
+            if (data._existingHandle) return data._existingHandle;
             const keyword = (tags && tags.length > 0) ? tags[0] : "";
             const slug = (keyword || safeTitle || "product")
               .toLowerCase()
@@ -2574,6 +2673,7 @@ class Shopify {
         skippedExisting++;
         e._existingProductId = existingProducts.get(asinLower).productId;
         e._existingHandle = existingProducts.get(asinLower).handle;
+        e._existingTags = existingProducts.get(asinLower).tags || [];
       }
       return true;
     });
