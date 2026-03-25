@@ -1,6 +1,7 @@
 {
   "name": "spark",
   "version": "0.5.3",
+  "description": "SparkCustom - Amazon product collector",
   "main": "./out/main/index.js",
   "author": "SparkCustom",
   "dependencies": {
