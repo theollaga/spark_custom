@@ -31571,10 +31571,6 @@ const useDefaultStore = /* @__PURE__ */ defineStore("default", () => {
   const taskMonitorItemList = ref([]);
   const taskMonitorItemTotal = ref(0);
   const taskLogList = ref([]);
-  const crawlerProgress = ref("");
-  const crawlerCollectedCount = ref(0);
-  const crawlerFoundCount = ref(0);
-  const crawlerLinkInfo = ref("");
   const taskResultStorageId = ref("");
   const taskResultDatasetContent = ref();
   const taskResultPagination = ref({
@@ -31592,10 +31588,6 @@ const useDefaultStore = /* @__PURE__ */ defineStore("default", () => {
     taskMonitorItemTotal.value = 0;
     taskMonitorItemList.value = [];
     taskLogList.value = [];
-    crawlerProgress.value = "";
-    crawlerCollectedCount.value = 0;
-    crawlerFoundCount.value = 0;
-    crawlerLinkInfo.value = "";
     const storageId = await window.electron.ipcRenderer.invoke("crawler:run", JSON.parse(JSON.stringify(taskList.value)), isHeadless.value, isPrime.value);
     currentTaskId.value = storageId;
     currentTaskState.value = "running";
@@ -31662,10 +31654,6 @@ const useDefaultStore = /* @__PURE__ */ defineStore("default", () => {
     taskMonitorItemList,
     taskMonitorItemTotal,
     taskLogList,
-    crawlerProgress,
-    crawlerCollectedCount,
-    crawlerFoundCount,
-    crawlerLinkInfo,
     taskResultStorageId,
     taskResultDatasetContent,
     taskResultPagination,
@@ -32222,7 +32210,6 @@ const _sfc_main$7 = /* @__PURE__ */ defineComponent({
     const defaultStore = useDefaultStore();
     return (_ctx, _cache) => {
       return openBlock(), createElementBlock("div", _hoisted_1$7, [
-        unref(defaultStore).crawlerLinkInfo ? (openBlock(), createElementBlock("div", { key: "progress", class: "crawler-progress-bar", style: "position:sticky;top:0;z-index:10;background:linear-gradient(135deg,#1a73e8,#4285f4);color:#fff;padding:10px 16px;border-radius:10px;margin-bottom:8px;font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;box-shadow:0 2px 8px rgba(26,115,232,0.3)" }, [createBaseVNode("span", { style: "font-size:16px" }, "\u{1F4E6}"), createBaseVNode("span", null, toDisplayString("링크 " + unref(defaultStore).crawlerLinkInfo + " | 발견: " + unref(defaultStore).crawlerFoundCount + "개 | 수집: " + unref(defaultStore).crawlerCollectedCount + "개"), 1)])) : createCommentVNode("", true),
         unref(defaultStore).taskLogList.length === 0 ? (openBlock(), createElementBlock("div", _hoisted_2$6, [..._cache[0] || (_cache[0] = [
           createBaseVNode("div", { class: "text-center" }, [
             createBaseVNode("p", { class: "empty-text" }, "로그가 없습니다.")
@@ -32719,15 +32706,6 @@ const _sfc_main$3 = /* @__PURE__ */ defineComponent({
       window.api.onReceiveCrawlerLog((log) => {
         if (defaultStore.taskLogList.length >= 50) defaultStore.taskLogList.pop();
         defaultStore.taskLogList.unshift(log);
-        if (log.message && log.message.includes("[링크")) {
-          var linkMatch = log.message.match(/\[링크\s*(\d+\/\d+)\]/);
-          if (linkMatch) defaultStore.crawlerLinkInfo = linkMatch[1];
-          var foundMatch = log.message.match(/상품\s*(\d+)개/);
-          if (foundMatch) defaultStore.crawlerFoundCount += parseInt(foundMatch[1]);
-        }
-        if (log.level === "success" && log.message && log.message.includes("수집 완료")) {
-          defaultStore.crawlerCollectedCount++;
-        }
       });
       window.api.onCrawlerTaskComplete((stopReason) => {
         if (stopReason) {

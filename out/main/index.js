@@ -1,4 +1,4 @@
-﻿"use strict";
+"use strict";
 var __create = Object.create;
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
@@ -206,41 +206,55 @@ const addProductListRouter = (router2) => {
         }
       }
       log2.info(`primeProductLinks : ${primeProductLinks.length}`);
-      let pageInfo = { currentPage: 1 };
+      let pageInfo = { currentPage: 1, lastPage: 1 };
       const paginationLoc = page.locator(".s-pagination-selected");
       const hasPagination = (await paginationLoc.count()) > 0;
       if (hasPagination) {
         const currentPageText = await paginationLoc.innerText();
         pageInfo.currentPage = +currentPageText;
+        // 마지막 페이지 번호 파악
+        const allPageItems = await page.locator(".s-pagination-item:not(.s-pagination-next):not(.s-pagination-previous)").allInnerTexts();
+        const pageNumbers = allPageItems.map(t => parseInt(t)).filter(n => !isNaN(n));
+        if (pageNumbers.length > 0) {
+          pageInfo.lastPage = Math.max(...pageNumbers);
+        }
       }
-      crawlerLog.info(
-        `[크롤링] ${pageInfo.currentPage}페이지: ${primeProductLinks.length}개 발견`,
-      );
+      // userData에서 링크 정보 가져오기
+      const linkIndex = request.userData?.linkIndex || "?";
+      const totalLinks = request.userData?.totalLinks || "?";
+      const progressMsg = `[링크 ${linkIndex}/${totalLinks}] 페이지 ${pageInfo.currentPage}/${pageInfo.lastPage}, 상품 ${primeProductLinks.length}개 발견`;
+      crawlerLog.info(`[크롤링] ${progressMsg}`);
       sendLogToRenderer({
         label: request.label || "",
         url: request.url,
-        message: `${pageInfo.currentPage}페이지 상품 수 : ${primeProductLinks.length}`,
+        message: progressMsg,
         level: "info",
         timestamp: Date.now(),
       });
       await enqueueLinks({
         urls: primeProductLinks,
         label: LABEL.AMAZON_PRODUCT_ASIN,
+        forefront: true,
         userData: { searchKeyword: searchKeyword || request.userData?.searchKeyword || "" },
       });
       const nextButton = page.locator(".s-pagination-next");
       const hasNext = (await nextButton.count()) > 0;
-      if (hasNext) {
+      if (hasNext && pageInfo.currentPage < pageInfo.lastPage) {
         crawlerLog.info(
           `[크롤링] ${pageInfo.currentPage}페이지 완료, 다음 페이지로 이동`,
         );
         await enqueueLinks({
           selector: ".s-pagination-next",
           label: LABEL.AMAZON_PRODUCT_LIST,
-          userData: { searchKeyword: searchKeyword || request.userData?.searchKeyword || "" },
+          forefront: true,
+          userData: {
+            searchKeyword: searchKeyword || request.userData?.searchKeyword || "",
+            linkIndex,
+            totalLinks,
+          },
         });
       } else {
-        crawlerLog.info(`[크롤링] ${pageInfo.currentPage}페이지 완료 (마지막)`);
+        crawlerLog.info(`[크롤링] ${pageInfo.currentPage}페이지 완료 (마지막 페이지 도달)`);
       }
     },
   );
@@ -1556,8 +1570,13 @@ const crawlerIPC = () => {
         crawlerLog.info(
           `[크롤링] === 시작 === URL: ${requests.length}개, Headless: ${isHeadless}, Prime: ${isPrime}`,
         );
-        for (const req of requests) {
-          crawlerLog.info(`[크롤링] 수집링크: ${req.url} (${req.label})`);
+        for (let i = 0; i < requests.length; i++) {
+          requests[i].userData = {
+            ...requests[i].userData,
+            linkIndex: i + 1,
+            totalLinks: requests.length,
+          };
+          crawlerLog.info(`[크롤링] 수집링크 ${i + 1}/${requests.length}: ${requests[i].url} (${requests[i].label})`);
         }
         Crawler.instance
           ?.run(requests)

@@ -1,6 +1,6 @@
 {
   "name": "spark",
-  "version": "0.5.1",
+  "version": "0.5.3",
   "main": "./out/main/index.js",
   "author": "SparkCustom",
   "dependencies": {
