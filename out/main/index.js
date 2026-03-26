@@ -1577,32 +1577,42 @@ const crawlerIPC = () => {
           };
           crawlerLog.info(`[크롤링] 수집링크 ${i + 1}/${requests.length}: ${requests[i].url} (${requests[i].label})`);
         }
-        Crawler.instance
-          ?.run(requests)
-          .then(async (stats) => {
+        (async () => {
+          try {
+            let totalFinished = 0;
+            let totalFailed = 0;
+            for (let ri = 0; ri < requests.length; ri++) {
+              if (Crawler.stopReason) break;
+              crawlerLog.info(`[크롤링] === 링크 ${ri + 1}/${requests.length} 시작 === ${requests[ri].url}`);
+              const stats = await Crawler.instance?.run([requests[ri]]);
+              if (stats) {
+                totalFinished += stats.requestsFinished;
+                totalFailed += stats.requestsFailed;
+              }
+              crawlerLog.info(`[크롤링] === 링크 ${ri + 1}/${requests.length} 완료 ===`);
+            }
             log.info("crawler:instance:run complete", Crawler.stopReason);
             try {
               const dataset = await Crawler.DataSetOpen(Crawler.storageId);
               const info = await dataset.getInfo();
               const savedCount = info?.itemCount || 0;
               crawlerLog.info(
-                `[크롤링] === 완료 === 저장: ${savedCount}개, 처리: ${stats.requestsFinished}개, 실패: ${stats.requestsFailed}개`,
+                `[크롤링] === 전체 완료 === 저장: ${savedCount}개, 처리: ${totalFinished}개, 실패: ${totalFailed}개`,
               );
             } catch (error) {
               crawlerLog.info(
-                `[크롤링] === 완료 === 처리: ${stats.requestsFinished}개, 실패: ${stats.requestsFailed}개`,
+                `[크롤링] === 전체 완료 === 처리: ${totalFinished}개, 실패: ${totalFailed}개`,
               );
             }
             await cleanupCollectedData(Crawler.storageId);
             sendToRenderer("crawler:complete", Crawler.stopReason);
-          })
-          .catch((error) => {
+          } catch (error) {
             log.error("crawler:instance:error", error);
             crawlerLog.error(`[크롤링] 중단: ${error}`);
-          })
-          .finally(async () => {
+          } finally {
             await Crawler.kill();
-          });
+          }
+        })();
         sendLogToRenderer({
           label: "",
           url: "",
