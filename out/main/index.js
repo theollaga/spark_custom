@@ -241,7 +241,21 @@ const addProductListRouter = (router2) => {
 
         // 다음 페이지로 직접 클릭 (세션 유지)
         try {
+          const expectedPage = currentPage + 1;
           await nextButton.click();
+          // 페이지 전환 완료 대기: pagination 값이 바뀔 때까지
+          try {
+            await page.waitForFunction(
+              (expected) => {
+                const sel = document.querySelector(".s-pagination-selected");
+                return sel && parseInt(sel.textContent) >= expected;
+              },
+              expectedPage,
+              { timeout: 15000 }
+            );
+          } catch {
+            // 타임아웃: 페이지 번호가 안 바뀜 = 리다이렉트 가능성
+          }
           await page.waitForSelector(productItemLinkSelector, { timeout: 3e4 });
           // 리다이렉트 감지
           const newPaginationLoc = page.locator(".s-pagination-selected");
@@ -1358,7 +1372,7 @@ class Crawler {
         // 재시도 및 타임아웃 설정
         maxRequestRetries: 3,
         // 실패 시 최대 3번 재시도
-        requestHandlerTimeoutSecs: 180,
+        requestHandlerTimeoutSecs: 3600,
         // 요청당 최대 10분 (복잡한 페이지 대응)
         // 동시 실행 수 (1로 설정하여 순차 실행)
         maxConcurrency: 1,
