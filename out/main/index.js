@@ -153,7 +153,6 @@ const addProductListRouter = (router2) => {
     LABEL.AMAZON_PRODUCT_LIST,
     async ({ request, page, enqueueLinks, log: log2 }) => {
       log2.info(`${request.label} : ${request.url}`);
-      // 검색 URL에서 키워드 추출
       const searchKeyword = (() => {
         try {
           const urlObj = new URL(request.url);
@@ -161,100 +160,119 @@ const addProductListRouter = (router2) => {
           return k.replace(/\+/g, " ").trim();
         } catch { return ""; }
       })();
-      sendLogToRenderer({
-        label: request.label || "",
-        url: request.url,
-        message: "검색 결과 페이지 작업",
-        level: "info",
-        timestamp: Date.now(),
-      });
-      await Crawler.checkAborted();
-      const productItemLinkSelector =
-        '.s-main-slot > [data-component-type="s-search-result"]:not(.AdHolder) .s-product-image-container a';
-      await page.waitForSelector(productItemLinkSelector, {
-        timeout: 3e4,
-      });
-      const products = await page
-        .locator('.s-main-slot > [data-component-type="s-search-result"]:not(.AdHolder)')
-        .all();
-      let primeProductLinks = [];
-      await Crawler.checkAborted();
-      for (const product of products) {
-        if (global.isPrime) {
-          if (
-            (await product
-              .locator('[role="img"][aria-label="Amazon Prime"]')
-              .count()) > 0
-          ) {
-            const dataIndex = await product.getAttribute("data-index");
-            if (dataIndex !== null) {
-              const link =
-                (await product
-                  .locator(".s-product-image-container a")
-                  .getAttribute("href")) || "";
-              primeProductLinks.push(link);
-            }
-          }
-        } else {
-          const dataIndex = await product.getAttribute("data-index");
-          if (dataIndex === null) continue; // 추천/편집 블록 상품 스킵
-          const link =
-            (await product
-              .locator(".s-product-image-container a")
-              .getAttribute("href")) || "";
-          primeProductLinks.push(link);
-        }
-      }
-      log2.info(`primeProductLinks : ${primeProductLinks.length}`);
-      let pageInfo = { currentPage: 1, lastPage: 1 };
-      const paginationLoc = page.locator(".s-pagination-selected");
-      const hasPagination = (await paginationLoc.count()) > 0;
-      if (hasPagination) {
-        const currentPageText = await paginationLoc.innerText();
-        pageInfo.currentPage = +currentPageText;
-        // 마지막 페이지 번호 파악
-        const allPageItems = await page.locator(".s-pagination-item:not(.s-pagination-next):not(.s-pagination-previous)").allInnerTexts();
-        const pageNumbers = allPageItems.map(t => parseInt(t)).filter(n => !isNaN(n));
-        if (pageNumbers.length > 0) {
-          pageInfo.lastPage = Math.max(...pageNumbers);
-        }
-      }
-      // userData에서 링크 정보 가져오기
       const linkIndex = request.userData?.linkIndex || "?";
       const totalLinks = request.userData?.totalLinks || "?";
-      const progressMsg = `[링크 ${linkIndex}/${totalLinks}] 페이지 ${pageInfo.currentPage}/${pageInfo.lastPage}, 상품 ${primeProductLinks.length}개 발견`;
-      crawlerLog.info(`[크롤링] ${progressMsg}`);
+
+      // Phase 1: 모든 페이지를 빠르게 넘기며 상품 URL만 수집
+      let allProductLinks = [];
+      let currentPage = 1;
+      let totalPages = 1;
+      let pageCount = 0;
+
+      while (true) {
+        await Crawler.checkAborted();
+        sendLogToRenderer({
+          label: request.label || "",
+          url: page.url(),
+          message: `[링크 ${linkIndex}/${totalLinks}] 페이지 스캔 중...`,
+          level: "info",
+          timestamp: Date.now(),
+        });
+
+        const productItemLinkSelector =
+          '.s-main-slot > [data-component-type="s-search-result"]:not(.AdHolder) .s-product-image-container a';
+        try {
+          await page.waitForSelector(productItemLinkSelector, { timeout: 3e4 });
+        } catch {
+          crawlerLog.warn(`[크롤링] 상품 목록 로딩 실패, 스캔 종료`);
+          break;
+        }
+
+        const products = await page
+          .locator('.s-main-slot > [data-component-type="s-search-result"]:not(.AdHolder)')
+          .all();
+        let pageLinks = [];
+        for (const product of products) {
+          if (global.isPrime) {
+            if ((await product.locator('[role="img"][aria-label="Amazon Prime"]').count()) > 0) {
+              const dataIndex = await product.getAttribute("data-index");
+              if (dataIndex !== null) {
+                const link = (await product.locator(".s-product-image-container a").getAttribute("href")) || "";
+                pageLinks.push(link);
+              }
+            }
+          } else {
+            const dataIndex = await product.getAttribute("data-index");
+            if (dataIndex === null) continue;
+            const link = (await product.locator(".s-product-image-container a").getAttribute("href")) || "";
+            pageLinks.push(link);
+          }
+        }
+
+        // 페이지 정보
+        const paginationLoc = page.locator(".s-pagination-selected");
+        const hasPagination = (await paginationLoc.count()) > 0;
+        if (hasPagination) {
+          const currentPageText = await paginationLoc.innerText();
+          currentPage = +currentPageText;
+          const allPageItems = await page.locator(".s-pagination-item:not(.s-pagination-next):not(.s-pagination-previous)").allInnerTexts();
+          const pageNumbers = allPageItems.map(t => parseInt(t)).filter(n => !isNaN(n));
+          if (pageNumbers.length > 0) totalPages = Math.max(...pageNumbers);
+        }
+
+        pageCount++;
+        allProductLinks.push(...pageLinks);
+        crawlerLog.info(`[크롤링] [링크 ${linkIndex}/${totalLinks}] 페이지 ${currentPage}/${totalPages} 스캔 완료, 상품 ${pageLinks.length}개 (누적 ${allProductLinks.length}개)`);
+        sendLogToRenderer({
+          label: request.label || "",
+          url: page.url(),
+          message: `[링크 ${linkIndex}/${totalLinks}] 페이지 ${currentPage}/${totalPages} 스캔, 누적 ${allProductLinks.length}개`,
+          level: "info",
+          timestamp: Date.now(),
+        });
+
+        // 다음 페이지 확인
+        const nextButton = page.locator(".s-pagination-next:not(.s-pagination-disabled)");
+        const hasNext = (await nextButton.count()) > 0;
+        if (!hasNext) {
+          crawlerLog.info(`[크롤링] 마지막 페이지 도달 (${currentPage}페이지)`);
+          break;
+        }
+
+        // 다음 페이지로 직접 클릭 (세션 유지)
+        try {
+          await nextButton.click();
+          await page.waitForSelector(productItemLinkSelector, { timeout: 3e4 });
+          // 리다이렉트 감지
+          const newPaginationLoc = page.locator(".s-pagination-selected");
+          if ((await newPaginationLoc.count()) > 0) {
+            const newPageText = await newPaginationLoc.innerText();
+            const newPage = +newPageText;
+            if (newPage <= currentPage) {
+              crawlerLog.warn(`[크롤링] Amazon 리다이렉트 감지: ${currentPage}페이지 → ${newPage}페이지. 페이지 스캔 종료.`);
+              break;
+            }
+          }
+        } catch (e) {
+          crawlerLog.warn(`[크롤링] 다음 페이지 이동 실패: ${e}. 페이지 스캔 종료.`);
+          break;
+        }
+      }
+
+      // Phase 2: 수집한 모든 상품 URL을 한번에 enqueue
+      crawlerLog.info(`[크롤링] [링크 ${linkIndex}/${totalLinks}] 페이지 스캔 완료: ${pageCount}페이지, 총 ${allProductLinks.length}개 상품 발견. 수집 시작.`);
       sendLogToRenderer({
         label: request.label || "",
         url: request.url,
-        message: progressMsg,
+        message: `[링크 ${linkIndex}/${totalLinks}] ${pageCount}페이지 스캔 완료, ${allProductLinks.length}개 상품 수집 시작`,
         level: "info",
         timestamp: Date.now(),
       });
       await enqueueLinks({
-        urls: primeProductLinks,
+        urls: allProductLinks,
         label: LABEL.AMAZON_PRODUCT_ASIN,
-        forefront: true,
         userData: { searchKeyword: searchKeyword || request.userData?.searchKeyword || "" },
       });
-      const nextButton = page.locator(".s-pagination-next");
-      const hasNext = (await nextButton.count()) > 0;
-      if (hasNext) {
-        crawlerLog.info(
-          `[크롤링] ${pageInfo.currentPage}페이지 완료, 다음 페이지로 이동`,
-        );
-        await enqueueLinks({
-          selector: ".s-pagination-next",
-          label: LABEL.AMAZON_PRODUCT_LIST,
-          userData: {
-            searchKeyword: searchKeyword || request.userData?.searchKeyword || "",
-            linkIndex,
-            totalLinks,
-          },
-        });
-      } else {
-        crawlerLog.info(`[크롤링] ${pageInfo.currentPage}페이지 완료 (마지막 페이지 도달)`);
-      }
     },
   );
 };
