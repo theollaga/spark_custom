@@ -1,6 +1,6 @@
 {
   "name": "spark",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "description": "SparkCustom - Amazon product collector",
   "main": "./out/main/index.js",
   "author": "SparkCustom",

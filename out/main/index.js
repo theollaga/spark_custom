@@ -239,14 +239,13 @@ const addProductListRouter = (router2) => {
       });
       const nextButton = page.locator(".s-pagination-next");
       const hasNext = (await nextButton.count()) > 0;
-      if (hasNext && pageInfo.currentPage < pageInfo.lastPage) {
+      if (hasNext) {
         crawlerLog.info(
           `[크롤링] ${pageInfo.currentPage}페이지 완료, 다음 페이지로 이동`,
         );
         await enqueueLinks({
           selector: ".s-pagination-next",
           label: LABEL.AMAZON_PRODUCT_LIST,
-          forefront: true,
           userData: {
             searchKeyword: searchKeyword || request.userData?.searchKeyword || "",
             linkIndex,
@@ -1347,7 +1346,7 @@ class Crawler {
         maxConcurrency: 1,
         browserPoolOptions: {
           maxOpenPagesPerBrowser: 10,
-          retireBrowserAfterPageCount: 20,
+          retireBrowserAfterPageCount: 500,
         },      
         /**
          * Chromium 실행 옵션
