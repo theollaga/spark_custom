@@ -136,6 +136,19 @@ async function cleanupCollectedData(storageId) {
       crawlerLog.info(`[자동정리] ${items.length}개 중 ${removed}개 제거 (BSR 카테고리 불일치)`);
       removedItems.forEach(item => crawlerLog.info(`[자동정리] 제거: ${item}`));
       crawlerLog.info(`[자동정리] 최종 ${items.length - removed}개 유지`);
+      // 파일 번호 리넘버링 (Crawlee getData() 호환)
+      try {
+        const remainingFiles = _fs.readdirSync(dsPath).filter(f => f.endsWith(".json") && !f.startsWith("__")).sort();
+        for (let i = 0; i < remainingFiles.length; i++) {
+          const newName = String(i + 1).padStart(9, "0") + ".json";
+          if (remainingFiles[i] !== newName) {
+            _fs.renameSync(_path.join(dsPath, remainingFiles[i]), _path.join(dsPath, newName));
+          }
+        }
+        crawlerLog.info(`[자동정리] 파일 리넘버링 완료: ${remainingFiles.length}개`);
+      } catch (renameErr) {
+        crawlerLog.warn(`[자동정리] 리넘버링 실패: ${renameErr}`);
+      }
     } else {
       crawlerLog.info(`[자동정리] ${items.length}개 전부 유지 (제거 대상 없음)`);
     }
